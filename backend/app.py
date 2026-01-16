@@ -18,6 +18,8 @@ def get_payment_methods():
     # Return dict mapping id -> method
     return {pm['id']: pm for pm in res.data}
 
+from service.earnings_service import fetch_earnings_for_period, add_earning
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"})
@@ -71,30 +73,60 @@ def dashboard():
         
     user_id = request.args.get('user_id')
     expenses = fetch_expenses_for_period(month, year, user_id)
+    earnings = fetch_earnings_for_period(month, year, user_id)
     
-    total_amount = sum(float(e['amount']) for e in expenses)
+    total_spent = sum(float(e['amount']) for e in expenses)
+    total_earned = sum(float(e['amount']) for e in earnings)
+    
     category_totals = {}
-    user_totals = {} # New Breakdown
+    user_spend_totals = {}
+    user_earned_totals = {}
 
     for e in expenses:
         amt = float(e['amount'])
-        
         # Category Breakdown
         lbl = e['category_label']
         category_totals[lbl] = category_totals.get(lbl, 0.0) + amt
-        
         # User Breakdown
         u_name = e['user_name']
-        user_totals[u_name] = user_totals.get(u_name, 0.0) + amt
+        user_spend_totals[u_name] = user_spend_totals.get(u_name, 0.0) + amt
             
+    for e in earnings:
+        amt = float(e['amount'])
+        u_name = e['user_name']
+        user_earned_totals[u_name] = user_earned_totals.get(u_name, 0.0) + amt
+
     return jsonify({
         "billing_period": f"{month}/{year}",
-        "total_spent": total_amount,
+        "total_spent": total_spent,
+        "total_earned": total_earned,
         "category_breakdown": category_totals,
-        "user_breakdown": user_totals, # Return new data
+        "user_spend_breakdown": user_spend_totals,
+        "user_earned_breakdown": user_earned_totals,
         "expense_count": len(expenses),
-        "expenses": expenses
+        "expenses": expenses,
+        "earning_count": len(earnings),
+        "earnings": earnings
     })
+
+@app.route('/earnings', methods=['POST'])
+def create_earning():
+    data = request.json
+    required_fields = ['user_id', 'amount', 'earned_at']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+            
+    try:
+        new_earning = add_earning(
+            data['user_id'],
+            data['amount'],
+            data.get('description'),
+            data['earned_at']
+        )
+        return jsonify(new_earning), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/report/monthly', methods=['GET'])
 def monthly_report():
@@ -109,32 +141,30 @@ def monthly_report():
         
     user_id = request.args.get('user_id')
     expenses = fetch_expenses_for_period(month, year, user_id)
+    earnings = fetch_earnings_for_period(month, year, user_id)
     
-    if not expenses:
-        return jsonify({"message": "No expenses found for this period"}), 404
-        
-    # Create DataFrame
-    df = pd.DataFrame(expenses)
-    # Select and rename columns
-    cols_to_keep = ['spent_at', 'amount', 'category_label', 'payment_method_name', 'comment', 'currency']
-    df = df[cols_to_keep]
-    df.rename(columns={
-        'spent_at': 'Date',
-        'amount': 'Amount',
-        'category_label': 'Category',
-        'payment_method_name': 'Method',
-        'comment': 'Comment',
-        'currency': 'Currency'
-    }, inplace=True)
+    # Create DataFrames
+    df_exp = pd.DataFrame(expenses)
+    df_earn = pd.DataFrame(earnings)
     
-    # Generate Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='Expenses', index=False)
-        # Create a summary sheet?
-        summary = df.groupby('Category')['Amount'].sum().reset_index()
-        summary.to_excel(writer, sheet_name='Summary', index=False)
-        
+        if not df_exp.empty:
+            cols_to_keep = ['spent_at', 'amount', 'category_label', 'payment_method_name', 'comment', 'currency']
+            # Ensure columns exist before selecting
+            existing_cols = [c for c in cols_to_keep if c in df_exp.columns]
+            df_exp = df_exp[existing_cols]
+            df_exp.to_excel(writer, sheet_name='Expenses', index=False)
+            
+            summary = df_exp.groupby('category_label')['amount'].sum().reset_index() if 'category_label' in df_exp.columns else pd.DataFrame()
+            summary.to_excel(writer, sheet_name='Exp_Summary', index=False)
+
+        if not df_earn.empty:
+            cols_earn = ['earned_at', 'amount', 'description', 'user_name']
+            existing_cols_earn = [c for c in cols_earn if c in df_earn.columns]
+            df_earn = df_earn[existing_cols_earn]
+            df_earn.to_excel(writer, sheet_name='Earnings', index=False)
+
     output.seek(0)
     
     filename = f"report_{month}_{year}.xlsx"

@@ -9,27 +9,27 @@ class AccountingRepository {
         .from('categories')
         .select()
         .order('sort_order', ascending: true);
-    
+
     return (response as List).map((e) => Category.fromJson(e)).toList();
   }
 
   Future<List<PaymentMethod>> getPaymentMethods() async {
-    final response = await _client
-        .from('payment_methods')
-        .select();
-    
+    final response = await _client.from('payment_methods').select();
+
     return (response as List).map((e) => PaymentMethod.fromJson(e)).toList();
   }
 
   Future<List<UserProfile>> getProfiles() async {
-    final response = await _client
-        .from('profiles')
-        .select();
-    
+    final response = await _client.from('profiles').select();
+
     return (response as List).map((e) => UserProfile.fromJson(e)).toList();
   }
 
   Future<void> addExpense(Expense expense) async {
     await _client.from('expenses').insert(expense.toJson());
+  }
+
+  Future<void> addEarning(Earning earning) async {
+    await _client.from('earnings').insert(earning.toJson());
   }
 }

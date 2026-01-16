@@ -33,47 +33,73 @@ class BackendService {
     final url = '$baseUrl/report/monthly?month=$month&year=$year';
     print("Download Report URL: $url");
   }
+
+  Future<Earning> addEarning(Earning earning) async {
+    final uri = Uri.parse('$baseUrl/earnings');
+    final response = await http.post(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(earning.toJson()),
+    );
+
+    if (response.statusCode == 201) {
+      return Earning.fromJson(jsonDecode(response.body));
+    } else {
+      throw Exception('Failed to add earning: ${response.body}');
+    }
+  }
 }
 
 class DashboardData {
   final double totalSpent;
+  final double totalEarned;
   final Map<String, double> categoryBreakdown;
-  final Map<String, double> userBreakdown;
+  final Map<String, double> userSpendBreakdown;
+  final Map<String, double> userEarnedBreakdown;
   final String billingPeriod;
   final int expenseCount;
-  final List<dynamic> expenses; // Keep raw list for details view
+  final List<dynamic> expenses;
+  final int earningCount;
+  final List<Earning> earnings;
 
   DashboardData({
     required this.totalSpent,
+    required this.totalEarned,
     required this.categoryBreakdown,
-    required this.userBreakdown,
+    required this.userSpendBreakdown,
+    required this.userEarnedBreakdown,
     required this.billingPeriod,
     required this.expenseCount,
     required this.expenses,
+    required this.earningCount,
+    required this.earnings,
   });
 
   factory DashboardData.fromJson(Map<String, dynamic> json) {
-    Map<String, double> breakdown = {};
-    if (json['category_breakdown'] != null) {
-      json['category_breakdown'].forEach((key, value) {
-        breakdown[key] = (value as num).toDouble();
-      });
-    }
-
-    Map<String, double> uBreakdown = {};
-    if (json['user_breakdown'] != null) {
-      json['user_breakdown'].forEach((key, value) {
-        uBreakdown[key] = (value as num).toDouble();
-      });
+    Map<String, double> extractBreakdown(Map<String, dynamic>? data) {
+      Map<String, double> result = {};
+      if (data != null) {
+        data.forEach((key, value) {
+          result[key] = (value as num).toDouble();
+        });
+      }
+      return result;
     }
 
     return DashboardData(
       totalSpent: (json['total_spent'] as num).toDouble(),
-      categoryBreakdown: breakdown,
-      userBreakdown: uBreakdown,
+      totalEarned: (json['total_earned'] as num? ?? 0.0).toDouble(),
+      categoryBreakdown: extractBreakdown(json['category_breakdown']),
+      userSpendBreakdown: extractBreakdown(json['user_spend_breakdown']),
+      userEarnedBreakdown: extractBreakdown(json['user_earned_breakdown']),
       billingPeriod: json['billing_period'],
       expenseCount: json['expense_count'],
       expenses: json['expenses'] ?? [],
+      earningCount: json['earning_count'] ?? 0,
+      earnings: (json['earnings'] as List<dynamic>?)
+              ?.map((e) => Earning.fromJson(e))
+              .toList() ??
+          [],
     );
   }
 }

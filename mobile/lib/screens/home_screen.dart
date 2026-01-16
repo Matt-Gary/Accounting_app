@@ -3,6 +3,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import '../services/backend_service.dart';
 import 'add_expense_screen.dart';
+import 'add_earning_screen.dart';
 import 'expense_details_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -118,7 +119,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 20),
 
               // User Breakdown
-              if (_dashboardData!.userBreakdown.isNotEmpty)
+              if (_dashboardData!.userSpendBreakdown.isNotEmpty)
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -130,7 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const Text('Spending by User',
                           style: TextStyle(fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
-                      ..._dashboardData!.userBreakdown.entries.map((e) {
+                      ..._dashboardData!.userSpendBreakdown.entries.map((e) {
                         // Simple progress bar-like visualization or just text
                         return Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -224,47 +225,117 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          await Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const AddExpenseScreen()),
-          );
-          _loadDashboard(); // Refresh after adding
-        },
-        label: const Text('Add Expense',
-            style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16)),
-        icon: const Icon(Icons.add_circle, color: Colors.white, size: 24),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showAddOptions(context),
+        child: const Icon(Icons.add, color: Colors.white),
         backgroundColor: Colors.black,
-        elevation: 4,
       ),
     );
   }
 
+  void _showAddOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.money_off, color: Colors.red),
+                title: const Text('Add Expense'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AddExpenseScreen()),
+                  );
+                  _loadDashboard();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.attach_money, color: Colors.green),
+                title: const Text('Add Income'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AddEarningScreen()),
+                  );
+                  _loadDashboard();
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildTotalCard() {
+    final balance = _dashboardData!.totalEarned - _dashboardData!.totalSpent;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.black,
         borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 10,
+            offset: const Offset(0, 5),
+          ),
+        ],
       ),
       child: Column(
         children: [
-          const Text('Total Spent', style: TextStyle(color: Colors.white70)),
-          const SizedBox(height: 8),
+          const Text('Balance', style: TextStyle(color: Colors.white70)),
+          const SizedBox(height: 5),
           Text(
-            'R\$ ${_dashboardData!.totalSpent.toStringAsFixed(2)}',
-            style: const TextStyle(
-                color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold),
+            'R\$ ${balance.toStringAsFixed(2)}',
+            style: TextStyle(
+                color: balance >= 0 ? Colors.greenAccent : Colors.redAccent,
+                fontSize: 36,
+                fontWeight: FontWeight.bold),
           ),
-          const SizedBox(height: 8),
-          Text(
-            '${_dashboardData!.expenseCount} transactions',
-            style: const TextStyle(color: Colors.white54),
+          const SizedBox(height: 20),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              Column(
+                children: [
+                  const Text('Income', style: TextStyle(color: Colors.white54)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'R\$ ${_dashboardData!.totalEarned.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                        color: Colors.green,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              Container(height: 30, width: 1, color: Colors.white24),
+              Column(
+                children: [
+                  const Text('Expense',
+                      style: TextStyle(color: Colors.white54)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'R\$ ${_dashboardData!.totalSpent.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                        color: Colors.red,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ],
           ),
         ],
       ),

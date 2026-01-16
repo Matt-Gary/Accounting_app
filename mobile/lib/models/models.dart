@@ -92,3 +92,39 @@ class Expense {
     };
   }
 }
+
+class Earning {
+  final String? id;
+  final String userId;
+  final double amount;
+  final String? description;
+  final DateTime earnedAt;
+
+  Earning({
+    this.id,
+    required this.userId,
+    required this.amount,
+    this.description,
+    required this.earnedAt,
+  });
+
+  factory Earning.fromJson(Map<String, dynamic> json) {
+    return Earning(
+      id: json['id'],
+      userId: json['user_id'],
+      amount: (json['amount'] as num).toDouble(),
+      description: json['description'],
+      earnedAt: DateTime.parse(json['earned_at']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      if (id != null) 'id': id,
+      'user_id': userId,
+      'amount': amount,
+      'description': description,
+      'earned_at': earnedAt.toIso8601String(),
+    };
+  }
+}
