@@ -19,10 +19,72 @@ def get_payment_methods():
     return {pm['id']: pm for pm in res.data}
 
 from service.earnings_service import fetch_earnings_for_period, add_earning
+from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"})
+
+# ... (Expenses Logic Omitted for brevity in search, but preserved in file via correct ranges) ...
+# Actually, I need to match the replacement properly.
+# The user wants to APPEND standard CRUD routes. I'll put them before the report route or at the end.
+
+# INVESTMENTS ENDPOINTS
+@app.route('/investments', methods=['GET'])
+def get_investments():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    try:
+        portfolio = fetch_portfolio(user_id)
+        return jsonify(portfolio)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/investments', methods=['POST'])
+def create_investment():
+    data = request.json
+    required_fields = ['user_id', 'type', 'name', 'quantity']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+            
+    try:
+        res = add_investment(data['user_id'], data)
+        return jsonify(res), 201
+    except Exception as e:
+         return jsonify({"error": str(e)}), 500
+
+@app.route('/investments/<inv_id>', methods=['PUT'])
+def edit_investment(inv_id):
+    data = request.json
+    user_id = request.args.get('user_id') or data.get('user_id')
+    if not user_id:
+         return jsonify({"error": "user_id is required"}), 400
+         
+    try:
+        # Filter allowed fields
+        allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type']
+        updates = {k: v for k, v in data.items() if k in allowed}
+        
+        res = update_investment(inv_id, user_id, updates)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/investments/<inv_id>', methods=['DELETE'])
+def remove_investment(inv_id):
+    user_id = request.args.get('user_id')
+    if not user_id:
+         return jsonify({"error": "user_id is required"}), 400
+         
+    try:
+        res = delete_investment(inv_id, user_id)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # Helper function to fetch and filter expenses
 def fetch_expenses_for_period(month, year, user_id=None):

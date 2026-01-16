@@ -32,4 +32,20 @@ class AccountingRepository {
   Future<void> addEarning(Earning earning) async {
     await _client.from('earnings').insert(earning.toJson());
   }
+
+  Future<void> addInvestment(Investment investment) async {
+    await _client.from('investments').insert(investment.toJson());
+  }
+
+  Future<void> updateInvestment(Investment investment) async {
+    if (investment.id == null) return;
+    await _client
+        .from('investments')
+        .update(investment.toJson())
+        .eq('id', investment.id!);
+  }
+
+  Future<void> deleteInvestment(String id) async {
+    await _client.from('investments').delete().eq('id', id);
+  }
 }

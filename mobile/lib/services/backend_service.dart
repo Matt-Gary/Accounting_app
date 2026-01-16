@@ -48,6 +48,42 @@ class BackendService {
       throw Exception('Failed to add earning: ${response.body}');
     }
   }
+
+  Future<PortfolioData> getInvestments(String userId) async {
+    final uri = Uri.parse('$baseUrl/investments?user_id=$userId');
+    final response = await http.get(uri);
+
+    if (response.statusCode == 200) {
+      return PortfolioData.fromJson(jsonDecode(response.body));
+    } else {
+      throw Exception('Failed to load investments: ${response.body}');
+    }
+  }
+}
+
+class PortfolioData {
+  final double totalValueUsd;
+  final double totalValueBrl;
+  final double exchangeRate;
+  final List<Investment> investments;
+
+  PortfolioData(
+      {required this.totalValueUsd,
+      required this.totalValueBrl,
+      required this.exchangeRate,
+      required this.investments});
+
+  factory PortfolioData.fromJson(Map<String, dynamic> json) {
+    return PortfolioData(
+      totalValueUsd: (json['total_value_usd'] as num? ?? 0.0).toDouble(),
+      totalValueBrl: (json['total_value_brl'] as num? ?? 0.0).toDouble(),
+      exchangeRate: (json['exchange_rate_usd_brl'] as num? ?? 0.0).toDouble(),
+      investments: (json['investments'] as List<dynamic>?)
+              ?.map((e) => Investment.fromJson(e))
+              .toList() ??
+          [],
+    );
+  }
 }
 
 class DashboardData {
@@ -80,20 +116,20 @@ class DashboardData {
       Map<String, double> result = {};
       if (data != null) {
         data.forEach((key, value) {
-          result[key] = (value as num).toDouble();
+          result[key] = (value as num? ?? 0.0).toDouble();
         });
       }
       return result;
     }
 
     return DashboardData(
-      totalSpent: (json['total_spent'] as num).toDouble(),
+      totalSpent: (json['total_spent'] as num? ?? 0.0).toDouble(),
       totalEarned: (json['total_earned'] as num? ?? 0.0).toDouble(),
       categoryBreakdown: extractBreakdown(json['category_breakdown']),
       userSpendBreakdown: extractBreakdown(json['user_spend_breakdown']),
       userEarnedBreakdown: extractBreakdown(json['user_earned_breakdown']),
-      billingPeriod: json['billing_period'],
-      expenseCount: json['expense_count'],
+      billingPeriod: json['billing_period'] ?? '',
+      expenseCount: json['expense_count'] ?? 0,
       expenses: json['expenses'] ?? [],
       earningCount: json['earning_count'] ?? 0,
       earnings: (json['earnings'] as List<dynamic>?)

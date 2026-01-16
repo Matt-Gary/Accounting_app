@@ -112,7 +112,7 @@ class Earning {
     return Earning(
       id: json['id'],
       userId: json['user_id'],
-      amount: (json['amount'] as num).toDouble(),
+      amount: (json['amount'] as num? ?? 0.0).toDouble(),
       description: json['description'],
       earnedAt: DateTime.parse(json['earned_at']),
     );
@@ -125,6 +125,74 @@ class Earning {
       'amount': amount,
       'description': description,
       'earned_at': earnedAt.toIso8601String(),
+    };
+  }
+}
+
+class Investment {
+  final String? id;
+  final String userId;
+  final String type; // stock, crypto, bond, cash
+  final String? symbol;
+  final String name;
+  final double quantity;
+  final double costBasis;
+  final String currency; // 'USD' or 'BRL'
+
+  // Enriched fields from backend
+  final double? currentPrice;
+  final double? currentValueNative;
+  final double? currentValueUsd;
+  final double? currentValueBrl;
+  final double? pnl;
+  final double? pnlPct;
+
+  Investment({
+    this.id,
+    required this.userId,
+    required this.type,
+    this.symbol,
+    required this.name,
+    required this.quantity,
+    this.costBasis = 0.0,
+    this.currency = 'BRL',
+    this.currentPrice,
+    this.currentValueNative,
+    this.currentValueUsd,
+    this.currentValueBrl,
+    this.pnl,
+    this.pnlPct,
+  });
+
+  factory Investment.fromJson(Map<String, dynamic> json) {
+    return Investment(
+      id: json['id'],
+      userId: json['user_id'],
+      type: json['type'],
+      symbol: json['symbol'],
+      name: json['name'],
+      quantity: (json['quantity'] as num? ?? 0.0).toDouble(),
+      costBasis: (json['cost_basis'] as num? ?? 0.0).toDouble(),
+      currency: json['currency'] ?? 'BRL',
+      currentPrice: (json['current_price'] as num?)?.toDouble(),
+      currentValueNative: (json['current_value_native'] as num?)?.toDouble(),
+      currentValueUsd: (json['current_value_usd'] as num?)?.toDouble(),
+      currentValueBrl: (json['current_value_brl'] as num?)?.toDouble(),
+      pnl: (json['pnl'] as num?)?.toDouble(),
+      pnlPct: (json['pnl_pct'] as num?)?.toDouble(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      if (id != null) 'id': id,
+      'user_id': userId,
+      'type': type,
+      'symbol': symbol,
+      'name': name,
+      'quantity': quantity,
+      'cost_basis': costBasis,
+      'currency': currency,
     };
   }
 }
