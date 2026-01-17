@@ -190,6 +190,20 @@ def create_earning():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/expenses/<expense_id>', methods=['DELETE'])
+def delete_expense(expense_id):
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    try:
+        client = get_pg()
+        # Verify ownership before deletion
+        res = client.from_("expenses").delete().eq("id", expense_id).eq("user_id", user_id).execute()
+        return jsonify({"message": "Expense deleted successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/report/monthly', methods=['GET'])
 def monthly_report():
     """

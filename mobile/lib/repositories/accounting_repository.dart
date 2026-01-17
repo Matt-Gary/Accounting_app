@@ -48,4 +48,8 @@ class AccountingRepository {
   Future<void> deleteInvestment(String id) async {
     await _client.from('investments').delete().eq('id', id);
   }
+
+  Future<void> deleteExpense(String id) async {
+    await _client.from('expenses').delete().eq('id', id);
+  }
 }
