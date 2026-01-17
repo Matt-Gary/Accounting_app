@@ -11,11 +11,21 @@ def fetch_portfolio(user_id):
     if not investments:
         return {"total_value": 0.0, "investments": []}
 
-    # 2. Collect symbols to fetch (Stocks/Crypto) plus Exchange Rate
+    # 2. Collect symbols to fetch (Stocks/Crypto) plus Exchange Rates
     symbols = [inv['symbol'] for inv in investments if inv['type'] in ('stock', 'crypto') and inv['symbol']]
-    # Always fetch USD/BRL rate
-    exchange_ticker = "BRL=X" 
-    symbols.append(exchange_ticker)
+    
+    # Exchange Rates needed:
+    # BRL=X -> USD to BRL (e.g. 5.15)
+    # EURUSD=X -> EUR to USD (e.g. 1.05)
+    # USDPLN=X -> USD to PLN (e.g. 3.95)
+    rates_map = {
+        'BRL': 'BRL=X',
+        'EUR': 'EURUSD=X',
+        'PLN': 'USDPLN=X'
+    }
+    
+    for r in rates_map.values():
+        symbols.append(r)
     
     # 3. Fetch current prices
     prices = {}
@@ -26,23 +36,36 @@ def fetch_portfolio(user_id):
             for sym in set(symbols):
                 try:
                     ticker = data.tickers[sym]
+                    # Try fast_info first, then history
+                    price = 0.0
                     if hasattr(ticker, 'fast_info'):
-                        prices[sym] = ticker.fast_info['last_price']
-                    else:
+                        # safe access
+                        try:
+                            price = ticker.fast_info['last_price']
+                        except:
+                            pass
+                    
+                    if price == 0.0:
                         hist = ticker.history(period="1d")
                         if not hist.empty:
-                            prices[sym] = hist['Close'].iloc[-1]
+                            price = hist['Close'].iloc[-1]
+                            
+                    prices[sym] = price
                 except Exception as e:
                     print(f"Error fetching {sym}: {e}")
                     prices[sym] = 0.0
         except Exception as e:
             print(f"Batch fetch error: {e}")
 
-    # Rate: How many BRL for 1 USD?
-    # Ticker 'BRL=X' price is usually around 5.0 (BRL per USD)
-    usd_to_brl = prices.get(exchange_ticker, 5.0) 
-    # Fallback/Safety: if yahoo fails, maybe 1.0 (bad) or keep last known. 
-    if usd_to_brl <= 0.1: usd_to_brl = 5.0 # Basic sanity check
+    # Extract Rates
+    usd_to_brl = prices.get(rates_map['BRL'], 5.0) 
+    eur_to_usd = prices.get(rates_map['EUR'], 1.0)
+    usd_to_pln = prices.get(rates_map['PLN'], 4.0)
+
+    # Sanity checks
+    if usd_to_brl <= 0.1: usd_to_brl = 5.0
+    if eur_to_usd <= 0.1: eur_to_usd = 1.0
+    if usd_to_pln <= 0.1: usd_to_pln = 4.0
 
     # 4. Calculate Values
     total_val_usd = 0.0
@@ -66,13 +89,20 @@ def fetch_portfolio(user_id):
             # Bonds / Other
             val_in_native = qty # Assuming qty holds value
         
-        # Convert to Both
+        # Convert Native -> USD
         if inv_currency == 'USD':
             val_usd = val_in_native
-            val_brl = val_in_native * usd_to_brl
-        else: # BRL
-            val_brl = val_in_native
-            val_usd = val_in_native / usd_to_brl if usd_to_brl else 0.0
+        elif inv_currency == 'BRL':
+            val_usd = val_in_native / usd_to_brl
+        elif inv_currency == 'EUR':
+            val_usd = val_in_native * eur_to_usd
+        elif inv_currency == 'PLN':
+            val_usd = val_in_native / usd_to_pln
+        else:
+            val_usd = val_in_native # Fallback
+            
+        # Convert USD -> BRL
+        val_brl = val_usd * usd_to_brl
 
         # PnL (Native Currency)
         cost_basis = float(inv.get('cost_basis') or 0.0)
@@ -94,6 +124,8 @@ def fetch_portfolio(user_id):
         "total_value_usd": total_val_usd,
         "total_value_brl": total_val_brl,
         "exchange_rate_usd_brl": usd_to_brl,
+        "exchange_rate_eur_usd": eur_to_usd,
+        "exchange_rate_usd_pln": usd_to_pln,
         "investments": enriched_investments
     }
 

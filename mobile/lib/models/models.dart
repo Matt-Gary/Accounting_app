@@ -168,7 +168,7 @@ class Investment {
     return Investment(
       id: json['id'],
       userId: json['user_id'],
-      type: json['type'],
+      type: json['type'] ?? 'other',
       symbol: json['symbol'],
       name: json['name'],
       quantity: (json['quantity'] as num? ?? 0.0).toDouble(),

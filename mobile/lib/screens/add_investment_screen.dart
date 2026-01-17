@@ -30,7 +30,7 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
   final List<String> _types = ['stock', 'crypto', 'bond', 'cash', 'other'];
 
   String _selectedCurrency = 'BRL';
-  final List<String> _currencies = ['BRL', 'USD'];
+  final List<String> _currencies = ['BRL', 'USD', 'EUR', 'PLN'];
 
   @override
   void initState() {
