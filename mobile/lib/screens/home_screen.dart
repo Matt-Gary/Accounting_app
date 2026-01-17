@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import '../services/backend_service.dart';
+import '../repositories/accounting_repository.dart';
 import 'add_expense_screen.dart';
 import 'add_earning_screen.dart';
 import 'expense_details_screen.dart';
@@ -15,6 +16,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _backendService = BackendService();
+  final _repository = AccountingRepository();
 
   DateTime _currentDate = DateTime.now();
   bool _isLoading = false;
@@ -52,6 +54,44 @@ class _HomeScreenState extends State<HomeScreen> {
           DateTime(_currentDate.year, _currentDate.month + months, 1);
     });
     _loadDashboard();
+  }
+
+  Future<void> _deleteExpense(Map<String, dynamic> expense) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Delete Expense"),
+        content: const Text("Are you sure you want to delete this expense?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Delete", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await _repository.deleteExpense(expense['id']);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Expense deleted successfully')),
+          );
+          _loadDashboard();
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e')),
+          );
+        }
+      }
+    }
   }
 
   @override
@@ -188,14 +228,18 @@ class _HomeScreenState extends State<HomeScreen> {
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
                     child: ListTile(
-                      onTap: () {
-                        Navigator.push(
+                      onTap: () async {
+                        final result = await Navigator.push(
                           context,
                           MaterialPageRoute(
                               builder: (_) =>
                                   ExpenseDetailsScreen(expense: exp)),
                         );
+                        if (result == true) {
+                          _loadDashboard(); // Reload if expense was deleted
+                        }
                       },
+                      onLongPress: () => _deleteExpense(exp),
                       leading: CircleAvatar(
                         backgroundColor: Colors.blue[50],
                         child: Text(exp['category_label'][0]),
