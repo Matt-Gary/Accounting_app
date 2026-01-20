@@ -19,6 +19,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
   final _repository = AccountingRepository();
   bool _isLoading = false;
   PortfolioData? _portfolio;
+  PortfolioDistribution? _distribution;
   String _errorMessage = '';
 
   @override
@@ -48,10 +49,31 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
     try {
       final data = await _backendService.getInvestments(widget.currentUser!.id);
       setState(() => _portfolio = data);
+      _loadDistribution();
     } catch (e) {
       setState(() => _errorMessage = e.toString());
     } finally {
       setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadDistribution() async {
+    if (widget.currentUser == null) return;
+
+    try {
+      // Only apply chart type filter if not 'All'
+      List<String>? typesFilter;
+      if (_chartTypeFilter != 'All') {
+        typesFilter = [_chartTypeFilter.toLowerCase()];
+      }
+
+      final dist = await _backendService.getPortfolioDistribution(
+        widget.currentUser!.id,
+        investmentTypes: typesFilter,
+      );
+      setState(() => _distribution = dist);
+    } catch (e) {
+      print('Error loading distribution: $e');
     }
   }
 
@@ -311,9 +333,9 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                       const SizedBox(height: 20),
 
                       // Pie Chart Section
-                      if (_portfolio != null &&
-                          _portfolio!.investments.isNotEmpty)
-                        _buildPieChart(_portfolio!.investments),
+                      if (_distribution != null &&
+                          _distribution!.distribution.isNotEmpty)
+                        _buildPieChart(),
 
                       const SizedBox(height: 20),
 
@@ -343,6 +365,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
   String _filterType = 'All';
   String _filterCurrency = 'All';
   String _chartCurrency = 'BRL'; // 'BRL' or 'USD'
+  String _chartTypeFilter = 'All'; // Filter for pie chart by type
 
   Widget _buildFilters() {
     return SingleChildScrollView(
@@ -374,72 +397,87 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
     );
   }
 
-  Widget _buildPieChart(List<Investment> investments) {
-    // Group by Name or Symbol for the chart to avoid clutter if many lots of same
-    // For simplicity, let's just map each investment. If too many, might need grouping.
+  Widget _buildPieChart() {
+    if (_distribution == null) return const SizedBox.shrink();
 
-    double totalVal = 0.0;
-    // Calculate total based on selected chart currency
-    if (_chartCurrency == 'BRL') {
-      totalVal = _portfolio?.totalValueBrl ?? 0;
-    } else {
-      totalVal = _portfolio?.totalValueUsd ?? 0;
-    }
-
-    if (totalVal == 0) return const SizedBox.shrink();
+    double totalVal = _chartCurrency == 'BRL'
+        ? _distribution!.totalValueBrl
+        : _distribution!.totalValueUsd;
 
     List<PieChartSectionData> sections = [];
-    final List<Color> colors = [
-      Colors.blue,
-      Colors.red,
-      Colors.green,
-      Colors.orange,
-      Colors.purple,
-      Colors.teal,
-      Colors.pink,
-      Colors.amber
+    bool showingIndividual =
+        _distribution!.items != null && _distribution!.items!.isNotEmpty;
+    bool isEmpty = totalVal == 0 ||
+        (_distribution!.distribution.isEmpty && !showingIndividual);
+
+    final Map<String, Color> typeColors = {
+      'stock': Colors.blue,
+      'crypto': Colors.orange,
+      'bond': Colors.green,
+      'cash': Colors.teal,
+      'other': Colors.purple,
+    };
+
+    // More diverse color scheme for individual investments
+    final List<Color> individualColors = [
+      Colors.blue.shade700,
+      Colors.green.shade600,
+      Colors.orange.shade700,
+      Colors.purple.shade600,
+      Colors.teal.shade700,
+      Colors.indigo.shade700,
+      Colors.pink.shade600,
+      Colors.lime.shade700,
+      Colors.cyan.shade700,
+      Colors.deepOrange.shade600,
+      Colors.lightBlue.shade600,
+      Colors.amber.shade700,
+      Colors.deepPurple.shade600,
+      Colors.lightGreen.shade700,
+      Colors.brown.shade600,
     ];
 
-    int i = 0;
-    // We want to show distribution of the WHOLE portfolio, not just filtered.
-    // Or normally, charts show what's filtered. Let's show ALL for overview,
-    // or arguably filtered. Let's stick to ALL investments for the portfolio chart.
+    if (showingIndividual && !isEmpty) {
+      // Show individual investments
+      int colorIndex = 0;
+      for (var item in _distribution!.items!) {
+        double val = _chartCurrency == 'BRL' ? item.valueBrl : item.valueUsd;
 
-    // Sort by value desc to make chart pretty
-    List<Investment> sortedCalls = List.from(investments);
-    sortedCalls.sort((a, b) {
-      double valA = _chartCurrency == 'BRL'
-          ? (a.currentValueBrl ?? 0)
-          : (a.currentValueUsd ?? 0);
-      double valB = _chartCurrency == 'BRL'
-          ? (b.currentValueBrl ?? 0)
-          : (b.currentValueUsd ?? 0);
-      return valB.compareTo(valA);
-    });
+        if (val <= 0) continue;
 
-    for (var inv in sortedCalls) {
-      double val = _chartCurrency == 'BRL'
-          ? (inv.currentValueBrl ?? 0)
-          : (inv.currentValueUsd ?? 0);
-      if (val <= 0) continue;
+        final color = individualColors[colorIndex % individualColors.length];
+        final pct = item.percentage;
 
-      final color = colors[i % colors.length];
-      final pct = (val / totalVal) * 100;
+        sections.add(PieChartSectionData(
+          color: color,
+          value: val,
+          title: '${pct.toStringAsFixed(1)}%',
+          radius: 60,
+          titleStyle: const TextStyle(
+              fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+        ));
+        colorIndex++;
+      }
+    } else if (!isEmpty) {
+      // Show aggregated by type
+      for (var typeData in _distribution!.distribution) {
+        double val =
+            _chartCurrency == 'BRL' ? typeData.valueBrl : typeData.valueUsd;
 
-      if (pct < 1) continue; // Skip very small slices
+        if (val <= 0) continue;
 
-      sections.add(PieChartSectionData(
-        color: color,
-        value: val,
-        title: '${pct.toStringAsFixed(1)}%',
-        radius: 50,
-        titleStyle: const TextStyle(
-            fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
-        badgeWidget:
-            Text(inv.symbol ?? inv.name, style: const TextStyle(fontSize: 10)),
-        badgePositionPercentageOffset: 1.4,
-      ));
-      i++;
+        final color = typeColors[typeData.type.toLowerCase()] ?? Colors.grey;
+        final pct = typeData.percentage;
+
+        sections.add(PieChartSectionData(
+          color: color,
+          value: val,
+          title: '${pct.toStringAsFixed(1)}%',
+          radius: 60,
+          titleStyle: const TextStyle(
+              fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+        ));
+      }
     }
 
     return Container(
@@ -451,9 +489,13 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text("Portfolio Distribution",
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              // Toggle
+              Text(
+                showingIndividual
+                    ? "Individual ${_chartTypeFilter} Holdings"
+                    : "Portfolio Distribution by Type",
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              // Currency Toggle
               Row(children: [
                 _chartToggleBtn('BRL'),
                 const SizedBox(width: 4),
@@ -461,11 +503,44 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
               ])
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
+          // Type filter for pie chart
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                const Text("Filter: ",
+                    style: TextStyle(fontSize: 12, color: Colors.grey)),
+                ...['All', 'Stock', 'Crypto', 'Bond', 'Cash', 'Other']
+                    .map((type) => Padding(
+                          padding: const EdgeInsets.only(right: 4),
+                          child: _chartTypeFilterBtn(type),
+                        ))
+                    .toList(),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           SizedBox(
             height: 200,
-            child: sections.isEmpty
-                ? const Center(child: Text("No data"))
+            child: isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.pie_chart_outline,
+                            size: 64, color: Colors.grey.shade300),
+                        const SizedBox(height: 8),
+                        Text(
+                          _chartTypeFilter == 'All'
+                              ? 'No investments'
+                              : 'No ${_chartTypeFilter.toLowerCase()} investments',
+                          style: TextStyle(
+                              color: Colors.grey.shade500, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  )
                 : PieChart(
                     PieChartData(
                       sections: sections,
@@ -474,7 +549,94 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                     ),
                   ),
           ),
+          if (!isEmpty) const SizedBox(height: 12),
+          // Legend (only show if not empty)
+          if (!isEmpty)
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: showingIndividual
+                  ? _distribution!.items!.asMap().entries.map((entry) {
+                      int idx = entry.key;
+                      var item = entry.value;
+                      final color =
+                          individualColors[idx % individualColors.length];
+                      final val = _chartCurrency == 'BRL'
+                          ? item.valueBrl
+                          : item.valueUsd;
+                      final symbol = _chartCurrency == 'BRL' ? 'R\$' : '\$';
+                      final displayName = item.symbol ?? item.name;
+                      return Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: color,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '$displayName: $symbol ${val.toStringAsFixed(2)}',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ],
+                      );
+                    }).toList()
+                  : _distribution!.distribution.map((typeData) {
+                      final color = typeColors[typeData.type.toLowerCase()] ??
+                          Colors.grey;
+                      final val = _chartCurrency == 'BRL'
+                          ? typeData.valueBrl
+                          : typeData.valueUsd;
+                      final symbol = _chartCurrency == 'BRL' ? 'R\$' : '\$';
+                      return Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: color,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${typeData.type.toUpperCase()}: $symbol ${val.toStringAsFixed(2)}',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ],
+                      );
+                    }).toList(),
+            ),
         ],
+      ),
+    );
+  }
+
+  Widget _chartTypeFilterBtn(String type) {
+    bool isSelected = _chartTypeFilter == type;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _chartTypeFilter = type);
+        _loadDistribution();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.blue : Colors.grey[200],
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Text(
+          type,
+          style: TextStyle(
+              color: isSelected ? Colors.white : Colors.black,
+              fontSize: 10,
+              fontWeight: FontWeight.w600),
+        ),
       ),
     );
   }

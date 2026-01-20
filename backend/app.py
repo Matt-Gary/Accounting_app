@@ -19,7 +19,7 @@ def get_payment_methods():
     return {pm['id']: pm for pm in res.data}
 
 from service.earnings_service import fetch_earnings_for_period, add_earning
-from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment
+from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment, get_portfolio_distribution_by_type
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -82,6 +82,25 @@ def remove_investment(inv_id):
     try:
         res = delete_investment(inv_id, user_id)
         return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/investments/distribution', methods=['GET'])
+def get_distribution():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    # Optional filter: investment_types as comma-separated string
+    # Example: ?investment_types=stock,crypto
+    types_param = request.args.get('investment_types')
+    investment_types = None
+    if types_param:
+        investment_types = [t.strip() for t in types_param.split(',') if t.strip()]
+    
+    try:
+        distribution = get_portfolio_distribution_by_type(user_id, investment_types)
+        return jsonify(distribution)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
