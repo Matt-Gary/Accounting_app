@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 import '../models/models.dart';
 
 class BackendService {
@@ -29,10 +30,19 @@ class BackendService {
   }
 
   Future<void> downloadReport(int month, int year) async {
-    // Logic to open URL in browser or download file
-    // For MVP, we can just print the URL or use url_launcher
     final url = '$baseUrl/report/monthly?month=$month&year=$year';
-    print("Download Report URL: $url");
+    final uri = Uri.parse(url);
+
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        throw Exception('Could not launch $url');
+      }
+    } catch (e) {
+      print("Error launching download URL: $e");
+      rethrow;
+    }
   }
 
   Future<Earning> addEarning(Earning earning) async {

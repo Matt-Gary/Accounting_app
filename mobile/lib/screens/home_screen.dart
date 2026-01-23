@@ -110,13 +110,24 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.download, color: Colors.black),
-            onPressed: () {
-              // Trigger download
-              _backendService.downloadReport(
-                  _currentDate.month, _currentDate.year);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Report download started...')),
-              );
+            onPressed: () async {
+              try {
+                await _backendService.downloadReport(
+                    _currentDate.month, _currentDate.year);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Opening report download...')),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                        content: Text('Failed to download report: $e'),
+                        backgroundColor: Colors.red),
+                  );
+                }
+              }
             },
           ),
         ],
