@@ -19,7 +19,7 @@ def get_payment_methods():
     return {pm['id']: pm for pm in res.data}
 
 from service.earnings_service import fetch_earnings_for_period, add_earning
-from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment
+from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment, get_portfolio_distribution_by_type
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -82,6 +82,25 @@ def remove_investment(inv_id):
     try:
         res = delete_investment(inv_id, user_id)
         return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/investments/distribution', methods=['GET'])
+def get_distribution():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    # Optional filter: investment_types as comma-separated string
+    # Example: ?investment_types=stock,crypto
+    types_param = request.args.get('investment_types')
+    investment_types = None
+    if types_param:
+        investment_types = [t.strip() for t in types_param.split(',') if t.strip()]
+    
+    try:
+        distribution = get_portfolio_distribution_by_type(user_id, investment_types)
+        return jsonify(distribution)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -219,27 +238,129 @@ def monthly_report():
     expenses = fetch_expenses_for_period(month, year, user_id)
     earnings = fetch_earnings_for_period(month, year, user_id)
     
+    # Calculate totals
+    total_spent = sum(float(e['amount']) for e in expenses)
+    total_earned = sum(float(e['amount']) for e in earnings)
+    balance = total_earned - total_spent
+    
     # Create DataFrames
     df_exp = pd.DataFrame(expenses)
     df_earn = pd.DataFrame(earnings)
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        
+        # Create Summary Sheet (first sheet)
+        summary_sheet = workbook.add_worksheet('Summary')
+        
+        # Formats
+        header_format = workbook.add_format({
+            'bold': True,
+            'font_size': 14,
+            'bg_color': '#4472C4',
+            'font_color': 'white',
+            'align': 'center'
+        })
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 12,
+            'bg_color': '#D9E1F2'
+        })
+        currency_format = workbook.add_format({'num_format': 'R$ #,##0.00'})
+        positive_format = workbook.add_format({
+            'num_format': 'R$ #,##0.00',
+            'font_color': '#006100',
+            'bold': True
+        })
+        negative_format = workbook.add_format({
+            'num_format': 'R$ #,##0.00',
+            'font_color': '#9C0006',
+            'bold': True
+        })
+        
+        # Write Summary Header
+        summary_sheet.merge_range('A1:B1', f'Monthly Report - {month}/{year}', header_format)
+        
+        # Overall Summary
+        row = 2
+        summary_sheet.write(row, 0, 'Total Earnings', title_format)
+        summary_sheet.write(row, 1, total_earned, positive_format)
+        row += 1
+        summary_sheet.write(row, 0, 'Total Spending', title_format)
+        summary_sheet.write(row, 1, total_spent, negative_format)
+        row += 1
+        summary_sheet.write(row, 0, 'Balance', title_format)
+        balance_format = positive_format if balance >= 0 else negative_format
+        summary_sheet.write(row, 1, balance, balance_format)
+        
+        # Category Breakdown
+        if not df_exp.empty and 'category_label' in df_exp.columns:
+            row += 2
+            summary_sheet.merge_range(row, 0, row, 1, 'Spending by Category', header_format)
+            row += 1
+            category_totals = df_exp.groupby('category_label')['amount'].sum().sort_values(ascending=False)
+            for category, amount in category_totals.items():
+                summary_sheet.write(row, 0, category)
+                summary_sheet.write(row, 1, float(amount), currency_format)
+                row += 1
+        
+        # User Breakdown
+        if not df_exp.empty and 'user_name' in df_exp.columns:
+            row += 1
+            summary_sheet.merge_range(row, 0, row, 1, 'Spending by User', header_format)
+            row += 1
+            user_totals = df_exp.groupby('user_name')['amount'].sum().sort_values(ascending=False)
+            for user, amount in user_totals.items():
+                summary_sheet.write(row, 0, user)
+                summary_sheet.write(row, 1, float(amount), currency_format)
+                row += 1
+        
+        # Earnings by User
+        if not df_earn.empty and 'user_name' in df_earn.columns:
+            row += 1
+            summary_sheet.merge_range(row, 0, row, 1, 'Earnings by User', header_format)
+            row += 1
+            user_earnings = df_earn.groupby('user_name')['amount'].sum().sort_values(ascending=False)
+            for user, amount in user_earnings.items():
+                summary_sheet.write(row, 0, user)
+                summary_sheet.write(row, 1, float(amount), currency_format)
+                row += 1
+        
+        # Set column widths
+        summary_sheet.set_column('A:A', 25)
+        summary_sheet.set_column('B:B', 15)
+        
+        # Expenses Sheet
         if not df_exp.empty:
-            cols_to_keep = ['spent_at', 'amount', 'category_label', 'payment_method_name', 'comment', 'currency']
+            cols_to_keep = ['spent_at', 'amount', 'category_label', 'payment_method_name', 'user_name', 'comment', 'currency']
             # Ensure columns exist before selecting
             existing_cols = [c for c in cols_to_keep if c in df_exp.columns]
-            df_exp = df_exp[existing_cols]
-            df_exp.to_excel(writer, sheet_name='Expenses', index=False)
+            df_exp_export = df_exp[existing_cols].copy()
+            df_exp_export.to_excel(writer, sheet_name='Expenses', index=False)
             
-            summary = df_exp.groupby('category_label')['amount'].sum().reset_index() if 'category_label' in df_exp.columns else pd.DataFrame()
-            summary.to_excel(writer, sheet_name='Exp_Summary', index=False)
+            # Format expenses sheet
+            expense_sheet = writer.sheets['Expenses']
+            expense_sheet.set_column('A:A', 20)  # Date
+            expense_sheet.set_column('B:B', 12)  # Amount
+            expense_sheet.set_column('C:C', 20)  # Category
+            expense_sheet.set_column('D:D', 20)  # Payment Method
+            expense_sheet.set_column('E:E', 15)  # User
+            expense_sheet.set_column('F:F', 30)  # Comment
 
+        # Earnings Sheet
         if not df_earn.empty:
             cols_earn = ['earned_at', 'amount', 'description', 'user_name']
             existing_cols_earn = [c for c in cols_earn if c in df_earn.columns]
-            df_earn = df_earn[existing_cols_earn]
-            df_earn.to_excel(writer, sheet_name='Earnings', index=False)
+            df_earn_export = df_earn[existing_cols_earn].copy()
+            df_earn_export.to_excel(writer, sheet_name='Earnings', index=False)
+            
+            # Format earnings sheet
+            earnings_sheet = writer.sheets['Earnings']
+            earnings_sheet.set_column('A:A', 20)  # Date
+            earnings_sheet.set_column('B:B', 12)  # Amount
+            earnings_sheet.set_column('C:C', 30)  # Description
+            earnings_sheet.set_column('D:D', 15)  # User
 
     output.seek(0)
     

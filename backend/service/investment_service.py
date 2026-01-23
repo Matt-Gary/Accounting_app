@@ -153,3 +153,131 @@ def delete_investment(inv_id, user_id):
     client = get_pg()
     res = client.from_("investments").delete().eq("id", inv_id).eq("user_id", user_id).execute()
     return res.data
+
+def get_portfolio_distribution_by_type(user_id, investment_types=None):
+    """
+    Get portfolio distribution aggregated by investment type for pie chart.
+    
+    Args:
+        user_id: User ID to fetch investments for
+        investment_types: Optional list of investment types to filter (e.g., ['stock', 'crypto'])
+                         If None, includes all types
+    
+    Returns:
+        {
+            "distribution": [
+                {"type": "stock", "value_usd": 1000.0, "value_brl": 5000.0, "percentage": 50.0},
+                {"type": "crypto", "value_usd": 500.0, "value_brl": 2500.0, "percentage": 25.0},
+                ...
+            ],
+            "total_value_usd": 2000.0,
+            "total_value_brl": 10000.0,
+            "exchange_rate_usd_brl": 5.0,
+            "items": [...] # Only included when filtering by single type
+        }
+    """
+    # Fetch the full portfolio
+    portfolio = fetch_portfolio(user_id)
+    
+    if not portfolio['investments']:
+        return {
+            "distribution": [],
+            "total_value_usd": 0.0,
+            "total_value_brl": 0.0,
+            "exchange_rate_usd_brl": portfolio.get('exchange_rate_usd_brl', 5.0)
+        }
+    
+    # Check if filtering by single type - if so, return individual investments
+    show_individual = investment_types and len(investment_types) == 1
+    
+    if show_individual:
+        # Return individual investments within the type
+        filtered_type = investment_types[0]
+        items = []
+        total_usd = 0.0
+        total_brl = 0.0
+        
+        for inv in portfolio['investments']:
+            if inv['type'].lower() == filtered_type.lower():
+                val_usd = inv['current_value_usd']
+                val_brl = inv['current_value_brl']
+                
+                items.append({
+                    'id': inv.get('id'),
+                    'name': inv['name'],
+                    'symbol': inv.get('symbol'),
+                    'type': inv['type'],
+                    'value_usd': val_usd,
+                    'value_brl': val_brl,
+                    'quantity': inv['quantity'],
+                })
+                
+                total_usd += val_usd
+                total_brl += val_brl
+        
+        # Sort by value descending
+        items.sort(key=lambda x: x['value_usd'], reverse=True)
+        
+        # Calculate percentages
+        for item in items:
+            item['percentage'] = (item['value_usd'] / total_usd * 100) if total_usd > 0 else 0.0
+        
+        return {
+            "distribution": [{
+                'type': filtered_type,
+                'value_usd': total_usd,
+                'value_brl': total_brl,
+                'percentage': 100.0
+            }],
+            "items": items,
+            "total_value_usd": total_usd,
+            "total_value_brl": total_brl,
+            "exchange_rate_usd_brl": portfolio.get('exchange_rate_usd_brl', 5.0)
+        }
+    
+    # Aggregate by type (original behavior)
+    type_aggregates = {}
+    total_usd = 0.0
+    total_brl = 0.0
+    
+    for inv in portfolio['investments']:
+        inv_type = inv['type']
+        
+        # Filter by investment types if specified
+        if investment_types and inv_type not in investment_types:
+            continue
+        
+        val_usd = inv['current_value_usd']
+        val_brl = inv['current_value_brl']
+        
+        if inv_type not in type_aggregates:
+            type_aggregates[inv_type] = {
+                'value_usd': 0.0,
+                'value_brl': 0.0
+            }
+        
+        type_aggregates[inv_type]['value_usd'] += val_usd
+        type_aggregates[inv_type]['value_brl'] += val_brl
+        total_usd += val_usd
+        total_brl += val_brl
+    
+    # Build distribution array with percentages
+    distribution = []
+    for inv_type, values in type_aggregates.items():
+        percentage = (values['value_usd'] / total_usd * 100) if total_usd > 0 else 0.0
+        distribution.append({
+            'type': inv_type,
+            'value_usd': values['value_usd'],
+            'value_brl': values['value_brl'],
+            'percentage': round(percentage, 2)
+        })
+    
+    # Sort by value descending
+    distribution.sort(key=lambda x: x['value_usd'], reverse=True)
+    
+    return {
+        "distribution": distribution,
+        "total_value_usd": total_usd,
+        "total_value_brl": total_brl,
+        "exchange_rate_usd_brl": portfolio.get('exchange_rate_usd_brl', 5.0)
+    }

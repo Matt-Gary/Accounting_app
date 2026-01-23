@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 import '../models/models.dart';
 
 class BackendService {
@@ -29,10 +30,19 @@ class BackendService {
   }
 
   Future<void> downloadReport(int month, int year) async {
-    // Logic to open URL in browser or download file
-    // For MVP, we can just print the URL or use url_launcher
     final url = '$baseUrl/report/monthly?month=$month&year=$year';
-    print("Download Report URL: $url");
+    final uri = Uri.parse(url);
+
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        throw Exception('Could not launch $url');
+      }
+    } catch (e) {
+      print("Error launching download URL: $e");
+      rethrow;
+    }
   }
 
   Future<Earning> addEarning(Earning earning) async {
@@ -58,6 +68,25 @@ class BackendService {
       return PortfolioData.fromJson(jsonDecode(response.body));
     } else {
       throw Exception('Failed to load investments: ${response.body}');
+    }
+  }
+
+  Future<PortfolioDistribution> getPortfolioDistribution(String userId,
+      {List<String>? investmentTypes}) async {
+    final queryParams = {
+      'user_id': userId,
+      if (investmentTypes != null && investmentTypes.isNotEmpty)
+        'investment_types': investmentTypes.join(','),
+    };
+
+    final uri = Uri.parse('$baseUrl/investments/distribution')
+        .replace(queryParameters: queryParams);
+    final response = await http.get(uri);
+
+    if (response.statusCode == 200) {
+      return PortfolioDistribution.fromJson(jsonDecode(response.body));
+    } else {
+      throw Exception('Failed to load distribution: ${response.body}');
     }
   }
 }
@@ -137,6 +166,100 @@ class DashboardData {
               ?.map((e) => Earning.fromJson(e))
               .toList() ??
           [],
+    );
+  }
+}
+
+class PortfolioDistribution {
+  final List<InvestmentTypeDistribution> distribution;
+  final List<InvestmentItem>?
+      items; // Individual investments when filtering by type
+  final double totalValueUsd;
+  final double totalValueBrl;
+  final double exchangeRate;
+
+  PortfolioDistribution({
+    required this.distribution,
+    this.items,
+    required this.totalValueUsd,
+    required this.totalValueBrl,
+    required this.exchangeRate,
+  });
+
+  factory PortfolioDistribution.fromJson(Map<String, dynamic> json) {
+    return PortfolioDistribution(
+      distribution: (json['distribution'] as List<dynamic>?)
+              ?.map((e) => InvestmentTypeDistribution.fromJson(e))
+              .toList() ??
+          [],
+      items: json['items'] != null
+          ? (json['items'] as List<dynamic>)
+              .map((e) => InvestmentItem.fromJson(e))
+              .toList()
+          : null,
+      totalValueUsd: (json['total_value_usd'] as num? ?? 0.0).toDouble(),
+      totalValueBrl: (json['total_value_brl'] as num? ?? 0.0).toDouble(),
+      exchangeRate: (json['exchange_rate_usd_brl'] as num? ?? 0.0).toDouble(),
+    );
+  }
+}
+
+// Placeholder for InvestmentItem, assuming it's similar to Investment
+// You might need to adjust this based on your actual InvestmentItem structure
+class InvestmentItem {
+  final String? id;
+  final String name;
+  final String? symbol;
+  final String type;
+  final double valueUsd;
+  final double valueBrl;
+  final double percentage;
+  final double quantity;
+
+  InvestmentItem({
+    this.id,
+    required this.name,
+    this.symbol,
+    required this.type,
+    required this.valueUsd,
+    required this.valueBrl,
+    required this.percentage,
+    required this.quantity,
+  });
+
+  factory InvestmentItem.fromJson(Map<String, dynamic> json) {
+    return InvestmentItem(
+      id: json['id']?.toString(),
+      name: json['name'] ?? '',
+      symbol: json['symbol'],
+      type: json['type'] ?? '',
+      valueUsd: (json['value_usd'] as num? ?? 0.0).toDouble(),
+      valueBrl: (json['value_brl'] as num? ?? 0.0).toDouble(),
+      percentage: (json['percentage'] as num? ?? 0.0).toDouble(),
+      quantity: (json['quantity'] as num? ?? 0.0).toDouble(),
+    );
+  }
+}
+
+class InvestmentTypeDistribution {
+  final String type;
+  final double valueUsd;
+  final double valueBrl;
+  final double percentage;
+
+  InvestmentTypeDistribution({
+    required this.type,
+    required this.valueUsd,
+    required this.valueBrl,
+    required this.percentage,
+  });
+
+  factory InvestmentTypeDistribution.fromJson(Map<String, dynamic> json) {
+    return InvestmentTypeDistribution(
+      type: json['type'] ?? '',
+      valueUsd: (json['value_usd'] as num? ?? 0.0).toDouble(),
+      valueBrl: (json['value_brl'] as num? ?? 0.0).toDouble(),
+      percentage: (json['percentage'] as num? ?? 0.0).toDouble(),
     );
   }
 }
