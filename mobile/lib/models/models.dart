@@ -69,6 +69,7 @@ class Expense {
   final String paymentMethodId;
   final String? comment;
   final DateTime spentAt;
+  final int installments;
 
   Expense({
     this.id,
@@ -78,6 +79,7 @@ class Expense {
     required this.paymentMethodId,
     this.comment,
     required this.spentAt,
+    this.installments = 0,
   });
 
   Map<String, dynamic> toJson() {
@@ -89,6 +91,7 @@ class Expense {
       'payment_method_id': paymentMethodId,
       'comment': comment,
       'spent_at': spentAt.toIso8601String(),
+      'installments': installments,
     };
   }
 }

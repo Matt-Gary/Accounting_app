@@ -22,6 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoading = false;
   DashboardData? _dashboardData;
   String _errorMessage = '';
+  String? _selectedCategory;
 
   @override
   void initState() {
@@ -52,8 +53,54 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _currentDate =
           DateTime(_currentDate.year, _currentDate.month + months, 1);
+      _selectedCategory = null; // Reset filter when changing month
     });
     _loadDashboard();
+  }
+
+  List<String> _getUniqueCategories() {
+    if (_dashboardData == null) return [];
+    final categories = _dashboardData!.expenses
+        .map((e) => e['category_label'] as String)
+        .toSet()
+        .toList();
+    categories.sort();
+    return categories;
+  }
+
+  List<dynamic> _getFilteredExpenses() {
+    if (_dashboardData == null) return [];
+    final filtered = _selectedCategory == null
+        ? List.from(_dashboardData!.expenses)
+        : _dashboardData!.expenses
+            .where((e) => e['category_label'] == _selectedCategory)
+            .toList();
+
+    // Sort by date descending
+    filtered.sort((a, b) {
+      final dateA = DateTime.parse(a['spent_at']);
+      final dateB = DateTime.parse(b['spent_at']);
+      return dateB.compareTo(dateA);
+    });
+
+    return filtered;
+  }
+
+  double _getFilteredTotalSpent() {
+    final filtered = _getFilteredExpenses();
+    return filtered.fold(
+        0.0, (sum, e) => sum + (e['amount'] as num).toDouble());
+  }
+
+  Map<String, double> _getFilteredUserBreakdown() {
+    final filtered = _getFilteredExpenses();
+    final breakdown = <String, double>{};
+    for (var exp in filtered) {
+      final user = exp['user_name'] as String;
+      final amount = (exp['amount'] as num).toDouble();
+      breakdown[user] = (breakdown[user] ?? 0) + amount;
+    }
+    return breakdown;
   }
 
   Future<void> _deleteExpense(Map<String, dynamic> expense) async {
@@ -164,6 +211,51 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Text('Error: $_errorMessage',
                       style: const TextStyle(color: Colors.red)))
             else if (_dashboardData != null) ...[
+              // Category Filter
+              if (_dashboardData!.categoryBreakdown.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 20),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        FilterChip(
+                          label: const Text('All'),
+                          selected: _selectedCategory == null,
+                          onSelected: (selected) {
+                            setState(() => _selectedCategory = null);
+                          },
+                          selectedColor: Colors.black,
+                          labelStyle: TextStyle(
+                            color: _selectedCategory == null
+                                ? Colors.white
+                                : Colors.black,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ..._getUniqueCategories().map((cat) {
+                          final isSelected = _selectedCategory == cat;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: FilterChip(
+                              label: Text(cat),
+                              selected: isSelected,
+                              onSelected: (selected) {
+                                setState(() =>
+                                    _selectedCategory = selected ? cat : null);
+                              },
+                              selectedColor: Colors.black,
+                              labelStyle: TextStyle(
+                                color: isSelected ? Colors.white : Colors.black,
+                              ),
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                ),
+
               // Total Spent Card
               _buildTotalCard(),
 
@@ -182,7 +274,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const Text('Spending by User',
                           style: TextStyle(fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
-                      ..._dashboardData!.userSpendBreakdown.entries.map((e) {
+                      ..._getFilteredUserBreakdown().entries.map((e) {
                         // Simple progress bar-like visualization or just text
                         return Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -230,9 +322,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ListView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                itemCount: _dashboardData!.expenses.length,
+                itemCount: _getFilteredExpenses().length,
                 itemBuilder: (context, index) {
-                  final exp = _dashboardData!.expenses[index];
+                  final exp = _getFilteredExpenses()[index];
                   return Card(
                     elevation: 0,
                     margin: const EdgeInsets.only(bottom: 8),
@@ -332,7 +424,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildTotalCard() {
-    final balance = _dashboardData!.totalEarned - _dashboardData!.totalSpent;
+    final filteredSpent = _getFilteredTotalSpent();
+    final balance = _dashboardData!.totalEarned - filteredSpent;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
@@ -382,7 +475,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: TextStyle(color: Colors.white54)),
                   const SizedBox(height: 4),
                   Text(
-                    'R\$ ${_dashboardData!.totalSpent.toStringAsFixed(2)}',
+                    'R\$ ${_getFilteredTotalSpent().toStringAsFixed(2)}',
                     style: const TextStyle(
                         color: Colors.red,
                         fontSize: 18,
