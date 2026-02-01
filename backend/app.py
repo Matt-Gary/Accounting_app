@@ -20,6 +20,7 @@ def get_payment_methods():
 
 from service.earnings_service import fetch_earnings_for_period, add_earning
 from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment, get_portfolio_distribution_by_type
+from datetime import timedelta
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -109,12 +110,16 @@ def get_distribution():
 def fetch_expenses_for_period(month, year, user_id=None):
     start_date, end_date = get_query_range_for_month(month, year)
     
+    # Fix: Use .lt() with the start of the next day to include the entire end_date
+    # This prevents excluding expenses on the last day of the month due to timestamp comparison
+    query_end = end_date + timedelta(days=1)
+    
     client = get_pg()
     # We need to fetch profiles(name) as well
     query = client.from_("expenses")\
         .select("*, categories(label), payment_methods(name, is_credit_card, closing_day), profiles(name)")\
         .gte("spent_at", start_date.isoformat())\
-        .lte("spent_at", end_date.isoformat())
+        .lt("spent_at", query_end.isoformat())
         
     if user_id:
         query = query.eq("user_id", user_id)
