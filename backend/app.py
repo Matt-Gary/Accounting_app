@@ -79,22 +79,15 @@ def materialize_recurring_expenses(month, year, user_id):
         
         print(f"[DEBUG] Target date: {target_date}")
 
-        # Don't backdate: skip if target month is more than 1 month before creation
-        # (1 month tolerance accounts for timezone UTC offset)
-        created_at = parse(rdef['created_at']).date()
-        print(f"[DEBUG] Created at: {created_at}")
-
-        months_diff = (created_at.year - target_date.year) * 12 + (created_at.month - target_date.month)
-        print(f"[DEBUG] Months diff (created - target): {months_diff}")
+        # Don't backdate: only allow expenses within 1 day of creation (timezone buffer)
+        # If created Feb 1st, we allow Jan 31st (for UTC offsets) but not Jan 1st.
+        created_at_date = parse(rdef['created_at']).date()
+        print(f"[DEBUG] Created at: {created_at_date}")
         
-        # If created in Mar (3), Target Feb (2) -> diff = 1. We allow it? 
-        # Ideally, we only want to skip if target is strictly BEFORE the creation window.
-        # If created Jan 31, Target Feb 1 -> diff = -1. OK.
-        # If created Feb 1, Target Feb 1 -> diff = 0. OK.
-        # If created Feb 1, Target Jan 1 -> diff = 1. OK (allow 1 month back due to timezone? maybe).
-        
-        if months_diff > 1:
-            print(f"[DEBUG] SKIPPING: Target is too far in past relative to creation.")
+        # Calculate strict cutoff: target must be >= created_at - 1 day
+        cutoff_slop = timedelta(days=1)
+        if target_date < (created_at_date - cutoff_slop):
+            print(f"[DEBUG] SKIPPING: Target {target_date} is before creation {created_at_date} (minus buffer)")
             continue
         
         # Check if already materialized for this month
