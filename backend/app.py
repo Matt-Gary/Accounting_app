@@ -333,7 +333,7 @@ def monthly_report():
         
         # Expenses Sheet
         if not df_exp.empty:
-            cols_to_keep = ['spent_at', 'amount', 'category_label', 'payment_method_name', 'user_name', 'comment', 'currency']
+            cols_to_keep = ['spent_at', 'amount', 'category_label', 'payment_method_name', 'user_name', 'comment', 'currency', 'installments']
             # Ensure columns exist before selecting
             existing_cols = [c for c in cols_to_keep if c in df_exp.columns]
             df_exp_export = df_exp[existing_cols].copy()

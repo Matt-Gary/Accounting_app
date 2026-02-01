@@ -29,6 +29,12 @@ class AccountingRepository {
     await _client.from('expenses').insert(expense.toJson());
   }
 
+  Future<void> addExpenses(List<Expense> expenses) async {
+    await _client
+        .from('expenses')
+        .insert(expenses.map((e) => e.toJson()).toList());
+  }
+
   Future<void> addEarning(Earning earning) async {
     await _client.from('earnings').insert(earning.toJson());
   }
