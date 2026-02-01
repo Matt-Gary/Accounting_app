@@ -16,6 +16,14 @@ class Category {
       sortOrder: json['sortOrder'] ?? 0,
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Category && runtimeType == other.runtimeType && key == other.key;
+
+  @override
+  int get hashCode => key.hashCode;
 }
 
 class PaymentMethod {
@@ -39,6 +47,16 @@ class PaymentMethod {
       closingDay: json['closing_day'],
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PaymentMethod &&
+          runtimeType == other.runtimeType &&
+          id == other.id;
+
+  @override
+  int get hashCode => id.hashCode;
 }
 
 class UserProfile {
@@ -59,6 +77,16 @@ class UserProfile {
       email: json['email'],
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UserProfile &&
+          runtimeType == other.runtimeType &&
+          id == other.id;
+
+  @override
+  int get hashCode => id.hashCode;
 }
 
 class Expense {
@@ -70,6 +98,7 @@ class Expense {
   final String? comment;
   final DateTime spentAt;
   final int installments;
+  final String? recurringId;
 
   Expense({
     this.id,
@@ -80,7 +109,22 @@ class Expense {
     this.comment,
     required this.spentAt,
     this.installments = 0,
+    this.recurringId,
   });
+
+  factory Expense.fromJson(Map<String, dynamic> json) {
+    return Expense(
+      id: json['id'],
+      userId: json['user_id'],
+      amount: (json['amount'] as num? ?? 0.0).toDouble(),
+      categoryKey: json['category_key'],
+      paymentMethodId: json['payment_method_id'],
+      comment: json['comment'],
+      spentAt: DateTime.parse(json['spent_at']),
+      installments: json['installments'] ?? 0,
+      recurringId: json['recurring_id'],
+    );
+  }
 
   Map<String, dynamic> toJson() {
     return {
@@ -92,6 +136,61 @@ class Expense {
       'comment': comment,
       'spent_at': spentAt.toIso8601String(),
       'installments': installments,
+      'recurring_id': recurringId,
+    };
+  }
+}
+
+class RecurringExpense {
+  final String? id;
+  final String userId;
+  final double amount;
+  final String categoryKey;
+  final String paymentMethodId;
+  final String? description;
+  final int dayOfMonth;
+  final bool active;
+  final DateTime? createdAt;
+
+  RecurringExpense({
+    this.id,
+    required this.userId,
+    required this.amount,
+    required this.categoryKey,
+    required this.paymentMethodId,
+    this.description,
+    required this.dayOfMonth,
+    this.active = true,
+    this.createdAt,
+  });
+
+  factory RecurringExpense.fromJson(Map<String, dynamic> json) {
+    return RecurringExpense(
+      id: json['id'],
+      userId: json['user_id'],
+      amount: (json['amount'] as num? ?? 0.0).toDouble(),
+      categoryKey: json['category_key'],
+      paymentMethodId: json['payment_method_id'],
+      description: json['description'],
+      dayOfMonth: json['day_of_month'] ?? 1,
+      active: json['active'] ?? true,
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'])
+          : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      if (id != null) 'id': id,
+      'user_id': userId,
+      'amount': amount,
+      'category_key': categoryKey,
+      'payment_method_id': paymentMethodId,
+      'description': description,
+      'day_of_month': dayOfMonth,
+      'active': active,
+      // created_at is handled by server
     };
   }
 }

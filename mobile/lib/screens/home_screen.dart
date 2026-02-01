@@ -6,6 +6,7 @@ import '../repositories/accounting_repository.dart';
 import 'add_expense_screen.dart';
 import 'add_earning_screen.dart';
 import 'expense_details_screen.dart';
+import 'recurring_expenses_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -293,6 +294,39 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              if (_dashboardData!.userEarnedBreakdown.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12)),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Income by User',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      ..._dashboardData!.userEarnedBreakdown.entries.map((e) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(e.key),
+                              Text('R\$ ${e.value.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.green)),
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ],
+
               const SizedBox(height: 20),
 
               // Category Chart
@@ -412,6 +446,32 @@ class _HomeScreenState extends State<HomeScreen> {
                   await Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const AddEarningScreen()),
+                  );
+                  _loadDashboard();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.repeat, color: Colors.blue),
+                title: const Text('Recurring Expenses'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const RecurringExpensesScreen()),
+                  );
+                  _loadDashboard();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.repeat, color: Colors.blue),
+                title: const Text('Recurring Expenses'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const RecurringExpensesScreen()),
                   );
                   _loadDashboard();
                 },
