@@ -339,6 +339,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
           );
         }).toList(),
         onChanged: onChanged,
+        validator: (value) => value == null ? 'Required' : null,
       ),
     );
   }

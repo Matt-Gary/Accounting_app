@@ -20,7 +20,109 @@ def get_payment_methods():
 
 from service.earnings_service import fetch_earnings_for_period, add_earning
 from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment, get_portfolio_distribution_by_type
-from datetime import timedelta
+from datetime import timedelta, date
+
+# ============= RECURRING EXPENSES LOGIC =============
+
+def materialize_recurring_expenses(month, year, user_id):
+    """
+    Auto-generates expense records for active recurring definitions.
+    Only creates expenses for months on or after the template creation month.
+    """
+    client = get_pg()
+    
+    # Get all active recurring expenses for this user
+    recurring_defs = client.from_("recurring_expenses")\
+        .select("*")\
+        .eq("user_id", user_id)\
+        .eq("active", True)\
+        .execute().data
+        
+    if not recurring_defs:
+        return
+    
+    # Get existing materialized expenses for this period to avoid duplicates
+    start_date, end_date = get_query_range_for_month(month, year)
+    query_end = end_date + timedelta(days=1)
+    
+    existing_expenses = client.from_("expenses")\
+        .select("id, recurring_id, spent_at")\
+        .eq("user_id", user_id)\
+        .not_.is_("recurring_id", "null")\
+        .gte("spent_at", start_date.isoformat())\
+        .lt("spent_at", query_end.isoformat())\
+        .execute().data
+    
+    # Map recurring_id -> list of spent_at dates already created
+    created_map = {}
+    for exp in existing_expenses:
+        rid = exp['recurring_id']
+        if rid not in created_map:
+            created_map[rid] = []
+        created_map[rid].append(parse(exp['spent_at']).date())
+    
+    # Process each recurring definition
+    for rdef in recurring_defs:
+        rid = rdef['id']
+        day = rdef['day_of_month'] or 1
+        
+        print(f"[DEBUG] Processing recurring '{rdef.get('description')}' (id={rid}, day={day}) for {month}/{year}")
+
+        # Calculate target date, handling end-of-month edge cases
+        try:
+            target_date = date(year, month, day)
+        except ValueError:
+            # Handle cases like Feb 31 -> Feb 28/29
+            import calendar
+            last_day = calendar.monthrange(year, month)[1]
+            target_date = date(year, month, min(day, last_day))
+        
+        print(f"[DEBUG] Target date: {target_date}")
+
+        # Don't backdate: skip if target month is more than 1 month before creation
+        # (1 month tolerance accounts for timezone UTC offset)
+        created_at = parse(rdef['created_at']).date()
+        print(f"[DEBUG] Created at: {created_at}")
+
+        months_diff = (created_at.year - target_date.year) * 12 + (created_at.month - target_date.month)
+        print(f"[DEBUG] Months diff (created - target): {months_diff}")
+        
+        # If created in Mar (3), Target Feb (2) -> diff = 1. We allow it? 
+        # Ideally, we only want to skip if target is strictly BEFORE the creation window.
+        # If created Jan 31, Target Feb 1 -> diff = -1. OK.
+        # If created Feb 1, Target Feb 1 -> diff = 0. OK.
+        # If created Feb 1, Target Jan 1 -> diff = 1. OK (allow 1 month back due to timezone? maybe).
+        
+        if months_diff > 1:
+            print(f"[DEBUG] SKIPPING: Target is too far in past relative to creation.")
+            continue
+        
+        # Check if already materialized for this month
+        already_created = False
+        if rid in created_map:
+            for dt in created_map[rid]:
+                # We check strict month match for materialization to avoid duplicates in same month
+                if dt.month == month and dt.year == year:
+                    already_created = True
+                    print(f"[DEBUG] SKIPPING: Already created for this month on {dt}")
+                    break
+        
+        if not already_created:
+            print(f"[DEBUG] MATERIALIZING: Creating expense for {target_date}")
+            # Create the expense
+            new_exp = {
+                "user_id": user_id,
+                "amount": rdef['amount'],
+                "category_key": rdef['category_key'],
+                "payment_method_id": rdef['payment_method_id'],
+                # "description": rdef['description'], # expenses table doesn't have description, likely uses comment
+                "spent_at": target_date.isoformat(),
+                "recurring_id": rid,
+                "comment": f"Recurring: {rdef['description'] or ''}".strip()
+            }
+            client.from_("expenses").insert(new_exp).execute()
+
+# =====================================================
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -122,7 +224,17 @@ def fetch_expenses_for_period(month, year, user_id=None):
         .lt("spent_at", query_end.isoformat())
         
     if user_id:
+        # Auto-materialize for this specific user before fetching
+        materialize_recurring_expenses(month, year, user_id)
         query = query.eq("user_id", user_id)
+    else:
+        # No user filter - materialize for ALL users
+        try:
+            all_users = client.from_("profiles").select("id").execute().data
+            for user in all_users:
+                materialize_recurring_expenses(month, year, user['id'])
+        except Exception as e:
+            print(f"Error materializing for all users: {e}")
         
     res = query.execute()
     raw_expenses = res.data
@@ -225,6 +337,59 @@ def delete_expense(expense_id):
         # Verify ownership before deletion
         res = client.from_("expenses").delete().eq("id", expense_id).eq("user_id", user_id).execute()
         return jsonify({"message": "Expense deleted successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# RECURRING EXPENSES ENDPOINTS
+
+@app.route('/recurring-expenses', methods=['GET'])
+def list_recurring():
+    # Optional filtering by user_id
+    user_id = request.args.get('user_id')
+    try:
+        client = get_pg()
+        query = client.from_("recurring_expenses").select("*, categories(label), payment_methods(name)")
+        if user_id:
+            query = query.eq("user_id", user_id)
+        res = query.execute()
+        return jsonify(res.data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/recurring-expenses', methods=['POST'])
+def create_recurring():
+    data = request.json
+    required = ['user_id', 'amount', 'category_key', 'payment_method_id', 'day_of_month']
+    for f in required:
+        if f not in data:
+            return jsonify({"error": f"Missing field: {f}"}), 400
+    try:
+        client = get_pg()
+        # Add created_at explicitly (though DB defaults to Now)? DB default is fine.
+        res = client.from_("recurring_expenses").insert(data).execute()
+        return jsonify(res.data[0]), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/recurring-expenses/<rid>', methods=['PUT'])
+def update_recurring(rid):
+    data = request.json
+    # We allow updating without user_id validation since no strict auth
+    try:
+        client = get_pg()
+        # Specific updates like 'active', 'amount', etc.
+        res = client.from_("recurring_expenses").update(data).eq("id", rid).execute()
+        return jsonify(res.data[0] if res.data else {}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/recurring-expenses/<rid>', methods=['DELETE'])
+def delete_recurring(rid):
+    try:
+        client = get_pg()
+        client.from_("recurring_expenses").delete().eq("id", rid).execute()
+        return jsonify({"message": "Deleted"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

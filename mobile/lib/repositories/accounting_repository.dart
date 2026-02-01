@@ -43,6 +43,28 @@ class AccountingRepository {
     await _client.from('investments').insert(investment.toJson());
   }
 
+  // RECURRING EXPENSES
+  Future<List<RecurringExpense>> getRecurringExpenses() async {
+    final response = await _client.from('recurring_expenses').select();
+    return (response as List).map((e) => RecurringExpense.fromJson(e)).toList();
+  }
+
+  Future<void> addRecurringExpense(RecurringExpense recurring) async {
+    await _client.from('recurring_expenses').insert(recurring.toJson());
+  }
+
+  Future<void> updateRecurringExpense(RecurringExpense recurring) async {
+    if (recurring.id == null) return;
+    await _client
+        .from('recurring_expenses')
+        .update(recurring.toJson())
+        .eq('id', recurring.id!);
+  }
+
+  Future<void> deleteRecurringExpense(String id) async {
+    await _client.from('recurring_expenses').delete().eq('id', id);
+  }
+
   Future<void> updateInvestment(Investment investment) async {
     if (investment.id == null) return;
     await _client
