@@ -62,10 +62,24 @@ def fetch_portfolio(user_id):
     eur_to_usd = prices.get(rates_map['EUR'], 1.0)
     usd_to_pln = prices.get(rates_map['PLN'], 4.0)
 
-    # Sanity checks
-    if usd_to_brl <= 0.1: usd_to_brl = 5.0
-    if eur_to_usd <= 0.1: eur_to_usd = 1.0
-    if usd_to_pln <= 0.1: usd_to_pln = 4.0
+    # Sanity checks and fallback logging
+    if usd_to_brl <= 0.1:
+        print(f"[WARNING] Invalid USD/BRL rate ({usd_to_brl}), using fallback: 5.0")
+        usd_to_brl = 5.0
+    elif rates_map['BRL'] not in prices or prices.get(rates_map['BRL'], 0) == 5.0:
+        print(f"[WARNING] Failed to fetch USD/BRL rate from Yahoo Finance, using fallback: 5.0")
+    
+    if eur_to_usd <= 0.1:
+        print(f"[WARNING] Invalid EUR/USD rate ({eur_to_usd}), using fallback: 1.0")
+        eur_to_usd = 1.0
+    elif rates_map['EUR'] not in prices or prices.get(rates_map['EUR'], 0) == 1.0:
+        print(f"[WARNING] Failed to fetch EUR/USD rate from Yahoo Finance, using fallback: 1.0")
+    
+    if usd_to_pln <= 0.1:
+        print(f"[WARNING] Invalid USD/PLN rate ({usd_to_pln}), using fallback: 4.0")
+        usd_to_pln = 4.0
+    elif rates_map['PLN'] not in prices or prices.get(rates_map['PLN'], 0) == 4.0:
+        print(f"[WARNING] Failed to fetch USD/PLN rate from Yahoo Finance, using fallback: 4.0")
 
     # 4. Calculate Values
     total_val_usd = 0.0

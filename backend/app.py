@@ -413,8 +413,9 @@ def update_recurring(rid):
                      .update(expense_updates)\
                      .eq("recurring_id", rid)\
                      .gte("spent_at", first_of_month.isoformat())\
+                     .select("id")\
                      .execute()
-                 print(f"[DEBUG] Expenses update executed. Data: {len(update_res.data) if update_res.data else 0}")
+                 print(f"[DEBUG] Expenses update executed. Updated count: {len(update_res.data) if update_res.data else 0}")
         else:
              print("[WARN] Update succeeded but returned no data? Check if ID exists or RLS.")
 
