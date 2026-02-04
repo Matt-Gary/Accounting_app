@@ -368,22 +368,117 @@ def create_recurring():
 @app.route('/recurring-expenses/<rid>', methods=['PUT'])
 def update_recurring(rid):
     data = request.json
+    print(f"[DEBUG] UPDATE RECURRING id={rid} data={data}")
     # We allow updating without user_id validation since no strict auth
     try:
         client = get_pg()
         # Specific updates like 'active', 'amount', etc.
-        res = client.from_("recurring_expenses").update(data).eq("id", rid).execute()
-        return jsonify(res.data[0] if res.data else {}), 200
+        # Chain .select() to ensure we get the updated record back
+        res = client.from_("recurring_expenses").update(data).eq("id", rid).select().execute()
+        updated_recurring = res.data[0] if res.data else None
+        
+        print(f"[DEBUG] UPDATED RECURRING RESULT: {updated_recurring}")
+
+        if updated_recurring:
+            # Propagate changes to future expenses (from start of current month)
+            today = date.today()
+            first_of_month = date(today.year, today.month, 1)
+            print(f"[DEBUG] Propagating changes from {first_of_month}")
+
+            # Build update payload for expenses
+            expense_updates = {}
+            if 'user_id' in data:
+                expense_updates['user_id'] = data['user_id']
+            if 'amount' in data:
+                expense_updates['amount'] = data['amount']
+            if 'category_key' in data:
+                 expense_updates['category_key'] = data['category_key']
+            if 'payment_method_id' in data:
+                 expense_updates['payment_method_id'] = data['payment_method_id']
+            if 'description' in data:
+                 expense_updates['comment'] = f"Recurring: {data['description']}"
+
+            print(f"[DEBUG] Expense Updates payload: {expense_updates}")
+            
+            if expense_updates:
+                 # Check what we are targeting
+                 target_check = client.from_("expenses")\
+                     .select("id, spent_at")\
+                     .eq("recurring_id", rid)\
+                     .gte("spent_at", first_of_month.isoformat())\
+                     .execute()
+                 print(f"[DEBUG] Target expenses found: {len(target_check.data) if target_check.data else 0}")
+                 
+                 update_res = client.from_("expenses")\
+                     .update(expense_updates)\
+                     .eq("recurring_id", rid)\
+                     .gte("spent_at", first_of_month.isoformat())\
+                     .execute()
+                 print(f"[DEBUG] Expenses update executed. Data: {len(update_res.data) if update_res.data else 0}")
+        else:
+             print("[WARN] Update succeeded but returned no data? Check if ID exists or RLS.")
+
+        return jsonify(updated_recurring if updated_recurring else {}), 200
     except Exception as e:
+        print(f"[ERROR] Update recurring failed: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/recurring-expenses/<rid>', methods=['DELETE'])
 def delete_recurring(rid):
     try:
         client = get_pg()
+        print(f"[DEBUG] DELETING RECURRING id={rid}")
+        
+        # First, check how many expenses are linked to this recurring
+        check_res = client.from_("expenses")\
+            .select("id", count="exact")\
+            .eq("recurring_id", rid)\
+            .execute()
+        print(f"[DEBUG] Found {check_res.count if hasattr(check_res, 'count') else 'unknown'} linked expenses")
+        
+        today = date.today()
+        first_of_month = date(today.year, today.month, 1)
+        
+        # 1. Delete future materialized expenses (from start of current month)
+        print("[DEBUG] Deleting future expenses...")
+        res_del = client.from_("expenses")\
+            .delete()\
+            .eq("recurring_id", rid)\
+            .gte("spent_at", first_of_month.isoformat())\
+            .execute()
+        print(f"[DEBUG] Delete response: {res_del}")
+
+        # 2. Unlink ANY remaining expenses - MUST use .select() to make update return data
+        print("[DEBUG] Unlinking remaining expenses...")
+        res_unlink = client.from_("expenses")\
+            .update({"recurring_id": None})\
+            .eq("recurring_id", rid)\
+            .select("id")\
+            .execute()
+        print(f"[DEBUG] Unlinked {len(res_unlink.data) if res_unlink.data else 0} remaining expenses")
+        print(f"[DEBUG] Unlink response: {res_unlink}")
+
+        # 3. Verify no expenses are still linked
+        verify_res = client.from_("expenses")\
+            .select("id", count="exact")\
+            .eq("recurring_id", rid)\
+            .execute()
+        remaining_count = verify_res.count if hasattr(verify_res, 'count') else len(verify_res.data) if verify_res.data else 0
+        print(f"[DEBUG] Remaining linked expenses: {remaining_count}")
+        
+        if remaining_count > 0:
+            print(f"[ERROR] Still have {remaining_count} expenses linked after unlink attempt!")
+            return jsonify({"error": f"Cannot delete: {remaining_count} expenses still linked"}), 400
+
+        # 4. Delete the recurring definition
+        print("[DEBUG] Deleting recurring definition...")
         client.from_("recurring_expenses").delete().eq("id", rid).execute()
+        print("[DEBUG] Successfully deleted recurring definition")
         return jsonify({"message": "Deleted"}), 200
     except Exception as e:
+        print(f"[ERROR] Delete recurring failed: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/report/monthly', methods=['GET'])
