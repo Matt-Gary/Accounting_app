@@ -463,19 +463,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   _loadDashboard();
                 },
               ),
-              ListTile(
-                leading: const Icon(Icons.repeat, color: Colors.blue),
-                title: const Text('Recurring Expenses'),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const RecurringExpensesScreen()),
-                  );
-                  _loadDashboard();
-                },
-              ),
             ],
           ),
         );
