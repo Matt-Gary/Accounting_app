@@ -202,8 +202,16 @@ def get_distribution():
 
 
 # Helper function to fetch and filter expenses
-def fetch_expenses_for_period(month, year, user_id=None):
-    start_date, end_date = get_query_range_for_month(month, year)
+def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=None):
+    # Retrieve default logic to determine query range
+    # If we have an override, we must assume the range needs to start earlier if the closing day is small (like 1st),
+    # or just use the override for query range calculation too.
+    # Safe bet: If override is provided, use it for range calculation too.
+    # Default fallback is 23 if not provided.
+    
+    query_closing_day = closing_day_override if closing_day_override is not None else 23
+    
+    start_date, end_date = get_query_range_for_month(month, year, closing_day=query_closing_day)
     
     # Fix: Use .lt() with the start of the next day to include the entire end_date
     # This prevents excluding expenses on the last day of the month due to timestamp comparison
@@ -236,12 +244,25 @@ def fetch_expenses_for_period(month, year, user_id=None):
     for exp in raw_expenses:
         spent_at_date = parse(exp['spent_at']).date()
         pm_info = exp['payment_methods']
-        closing_day = pm_info.get('closing_day', 23) or 23 
         
+        # LOGIC:
+        # If the user provided a specific 'closing_day_override' via the dashboard dropdown, use that.
+        # Otherwise, fallback to the database's 'pm_info.closing_day'.
+        # Finally, fallback to 23.
+        
+        # Note: The requirement is "change this day depending of the month" via dropdown.
+        # This implies the dropdown override takes precedence over the DB setting for credit cards.
+        
+        effective_closing_day = 23 # absolute fallback
+        if closing_day_override is not None:
+             effective_closing_day = closing_day_override
+        else:
+             effective_closing_day = pm_info.get('closing_day', 23) or 23
+
         b_month, b_year = get_billing_period(
             spent_at_date, 
             pm_info['is_credit_card'], 
-            closing_day
+            effective_closing_day
         )
         
         if b_month == month and b_year == year:
@@ -263,7 +284,12 @@ def dashboard():
         return jsonify({"error": "Missing or invalid month/year"}), 400
         
     user_id = request.args.get('user_id')
-    expenses = fetch_expenses_for_period(month, year, user_id)
+    
+    # Optional closing day override (1-31)
+    closing_day_arg = request.args.get('closing_day')
+    closing_day = int(closing_day_arg) if closing_day_arg and closing_day_arg.strip() else None
+
+    expenses = fetch_expenses_for_period(month, year, user_id, closing_day_override=closing_day)
     earnings = fetch_earnings_for_period(month, year, user_id)
     
     total_spent = sum(float(e['amount']) for e in expenses)
