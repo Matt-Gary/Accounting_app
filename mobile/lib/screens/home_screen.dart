@@ -29,6 +29,24 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _loadClosingDay();
+  }
+
+  Future<void> _loadClosingDay() async {
+    try {
+      final override = await _backendService.getClosingDayOverride(
+        _currentDate.month,
+        _currentDate.year,
+      );
+      setState(() {
+        _closingDay = override;
+      });
+    } catch (e) {
+      // No override found or error, use default
+      setState(() {
+        _closingDay = null;
+      });
+    }
     _loadDashboard();
   }
 
@@ -58,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
           DateTime(_currentDate.year, _currentDate.month + months, 1);
       _selectedCategory = null; // Reset filter when changing month
     });
-    _loadDashboard();
+    _loadClosingDay(); // Reload closing day for the new month
   }
 
   List<String> _getUniqueCategories() {
@@ -114,24 +132,49 @@ class _HomeScreenState extends State<HomeScreen> {
                       trailing: _closingDay == day
                           ? const Icon(Icons.check, color: Colors.blue)
                           : null,
-                      onTap: () {
-                        setState(() {
-                          _closingDay = day;
-                        });
-                        Navigator.pop(ctx);
-                        _loadDashboard();
+                      onTap: () async {
+                        try {
+                          await _backendService.setClosingDayOverride(
+                            _currentDate.month,
+                            _currentDate.year,
+                            day,
+                          );
+                          setState(() {
+                            _closingDay = day;
+                          });
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          _loadDashboard();
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Error: $e')),
+                            );
+                          }
+                        }
                       },
                     );
                   },
                 ),
               ),
               TextButton(
-                onPressed: () {
-                  setState(() {
-                    _closingDay = null; // Reset to default
-                  });
-                  Navigator.pop(ctx);
-                  _loadDashboard();
+                onPressed: () async {
+                  try {
+                    await _backendService.deleteClosingDayOverride(
+                      _currentDate.month,
+                      _currentDate.year,
+                    );
+                    setState(() {
+                      _closingDay = null; // Reset to default
+                    });
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    _loadDashboard();
+                  } catch (e) {
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e')),
+                      );
+                    }
+                  }
                 },
                 child: const Text('Reset to Default (23)'),
               ),
