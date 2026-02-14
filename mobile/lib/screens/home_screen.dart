@@ -234,7 +234,20 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           ),
           IconButton(
-            icon: const Icon(Icons.calendar_today, color: Colors.black),
+            icon: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.calendar_today, color: Colors.black, size: 20),
+                Text(
+                  '${_closingDay ?? 23}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.black,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
             onPressed: _showClosingDayPicker,
             tooltip: 'Set Closing Day',
           ),
