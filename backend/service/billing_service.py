@@ -28,18 +28,29 @@ def get_query_range_for_month(billing_month: int, billing_year: int, closing_day
     that COULD belong to this billing month.
     
     Cash/Pix: Month 1st to Month End.
-    Credit Card: Prev Month 23rd to Month 22nd.
+    Credit Card: Prev Month 23rd to Month 22nd (if closing_day=23).
     
-    So we need to fetch from (PrevMonth 23rd) to (Month End).
+    We need to fetch from (PrevMonth [closing_day]) to (Month End).
     """
     target_date = date(billing_year, billing_month, 1)
     
     # Start: Look back to previous month for Credit Card overlapping transactions
     prev_month = target_date - relativedelta(months=1)
-    start_date = prev_month.replace(day=closing_day)
+    
+    # Ensure closing_day is valid for previous month (e.g. Feb 30 -> Feb 28)
+    # But simple replace usually works if day is valid. 
+    # For safety with variable days (like 31), we might need robust handling, 
+    # but for query range start, if the prev month has fewer days than closing_day,
+    # the credit card logic effectively starts late or needs adjustment.
+    # However, for SQL query purposes, using a safe day 'min(closing_day, last_day_of_prev_month)' is safer.
+    import calendar
+    last_day_prev = calendar.monthrange(prev_month.year, prev_month.month)[1]
+    safe_closing_day = min(closing_day, last_day_prev)
+    
+    start_date = prev_month.replace(day=safe_closing_day)
     
     # End: End of the target month (for Cash/Pix)
-    # The billing cycle for CC ends on the 22nd of target month, 
+    # The billing cycle for CC ends on the (closing_day - 1) of target month, 
     # but Cash ends on 31st. So max date is end of month.
     next_month = target_date + relativedelta(months=1)
     end_date = next_month - timedelta(days=1)

@@ -24,6 +24,7 @@ class _HomeScreenState extends State<HomeScreen> {
   DashboardData? _dashboardData;
   String _errorMessage = '';
   String? _selectedCategory;
+  int? _closingDay;
 
   @override
   void initState() {
@@ -41,6 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final data = await _backendService.getDashboard(
         month: _currentDate.month,
         year: _currentDate.year,
+        closingDay: _closingDay,
       );
       setState(() => _dashboardData = data);
     } catch (e) {
@@ -85,6 +87,59 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     return filtered;
+  }
+
+  void _showClosingDayPicker() {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return Container(
+          height: 300,
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              const Text(
+                'Select Closing Day',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: 31,
+                  itemBuilder: (context, index) {
+                    final day = index + 1;
+                    return ListTile(
+                      title: Text('Day $day'),
+                      selected: _closingDay == day,
+                      trailing: _closingDay == day
+                          ? const Icon(Icons.check, color: Colors.blue)
+                          : null,
+                      onTap: () {
+                        setState(() {
+                          _closingDay = day;
+                        });
+                        Navigator.pop(ctx);
+                        _loadDashboard();
+                      },
+                    );
+                  },
+                ),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _closingDay = null; // Reset to default
+                  });
+                  Navigator.pop(ctx);
+                  _loadDashboard();
+                },
+                child: const Text('Reset to Default (23)'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   double _getFilteredTotalSpent() {
@@ -177,6 +232,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
               }
             },
+          ),
+          IconButton(
+            icon: const Icon(Icons.calendar_today, color: Colors.black),
+            onPressed: _showClosingDayPicker,
+            tooltip: 'Set Closing Day',
           ),
         ],
       ),
@@ -394,9 +454,21 @@ class _HomeScreenState extends State<HomeScreen> {
                                     fontStyle: FontStyle.italic, fontSize: 12)),
                         ],
                       ),
-                      trailing: Text(
-                        'R\$ ${(exp['amount'] as num).toDouble().toStringAsFixed(2)}',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            DateFormat('dd/MM')
+                                .format(DateTime.parse(exp['spent_at'])),
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey),
+                          ),
+                          Text(
+                            'R\$ ${(exp['amount'] as num).toDouble().toStringAsFixed(2)}',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ],
                       ),
                     ),
                   );

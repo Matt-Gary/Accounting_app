@@ -9,11 +9,15 @@ class BackendService {
   //static const String baseUrl = 'http://69.62.101.177:5005';
 
   Future<DashboardData> getDashboard(
-      {required int month, required int year, String? userId}) async {
+      {required int month,
+      required int year,
+      String? userId,
+      int? closingDay}) async {
     final queryParams = {
       'month': month.toString(),
       'year': year.toString(),
       if (userId != null) 'user_id': userId,
+      if (closingDay != null) 'closing_day': closingDay.toString(),
     };
 
     final uri =
