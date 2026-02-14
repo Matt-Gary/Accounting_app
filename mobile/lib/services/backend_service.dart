@@ -5,8 +5,8 @@ import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  //static const String baseUrl = 'http://127.0.0.1:5000';
-  static const String baseUrl = 'http://69.62.101.177:5005';
+  static const String baseUrl = 'http://127.0.0.1:5000';
+  //static const String baseUrl = 'http://69.62.101.177:5005';
 
   Future<DashboardData> getDashboard(
       {required int month,
@@ -91,6 +91,59 @@ class BackendService {
       return PortfolioDistribution.fromJson(jsonDecode(response.body));
     } else {
       throw Exception('Failed to load distribution: ${response.body}');
+    }
+  }
+
+  // ============= CLOSING DAY OVERRIDE METHODS =============
+
+  Future<int?> getClosingDayOverride(int month, int year) async {
+    final uri =
+        Uri.parse('$baseUrl/closing-day-overrides').replace(queryParameters: {
+      'month': month.toString(),
+      'year': year.toString(),
+    });
+
+    final response = await http.get(uri);
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return data['closing_day'] as int?;
+    } else {
+      throw Exception('Failed to get closing day override: ${response.body}');
+    }
+  }
+
+  Future<void> setClosingDayOverride(
+      int month, int year, int closingDay) async {
+    final uri = Uri.parse('$baseUrl/closing-day-overrides');
+
+    final response = await http.post(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'month': month,
+        'year': year,
+        'closing_day': closingDay,
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to set closing day override: ${response.body}');
+    }
+  }
+
+  Future<void> deleteClosingDayOverride(int month, int year) async {
+    final uri =
+        Uri.parse('$baseUrl/closing-day-overrides').replace(queryParameters: {
+      'month': month.toString(),
+      'year': year.toString(),
+    });
+
+    final response = await http.delete(uri);
+
+    if (response.statusCode != 200 && response.statusCode != 404) {
+      throw Exception(
+          'Failed to delete closing day override: ${response.body}');
     }
   }
 }

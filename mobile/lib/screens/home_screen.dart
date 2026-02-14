@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../services/backend_service.dart';
 import '../repositories/accounting_repository.dart';
 import 'add_expense_screen.dart';
@@ -27,8 +26,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _selectedCategory;
   int? _closingDay;
 
-  static const String _closingDayKey = 'closing_day';
-
   @override
   void initState() {
     super.initState();
@@ -36,10 +33,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadClosingDay() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _closingDay = prefs.getInt(_closingDayKey);
-    });
+    try {
+      final override = await _backendService.getClosingDayOverride(
+        _currentDate.month,
+        _currentDate.year,
+      );
+      setState(() {
+        _closingDay = override;
+      });
+    } catch (e) {
+      // No override found or error, use default
+      setState(() {
+        _closingDay = null;
+      });
+    }
     _loadDashboard();
   }
 
@@ -69,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
           DateTime(_currentDate.year, _currentDate.month + months, 1);
       _selectedCategory = null; // Reset filter when changing month
     });
-    _loadDashboard();
+    _loadClosingDay(); // Reload closing day for the new month
   }
 
   List<String> _getUniqueCategories() {
@@ -126,13 +133,24 @@ class _HomeScreenState extends State<HomeScreen> {
                           ? const Icon(Icons.check, color: Colors.blue)
                           : null,
                       onTap: () async {
-                        final prefs = await SharedPreferences.getInstance();
-                        await prefs.setInt(_closingDayKey, day);
-                        setState(() {
-                          _closingDay = day;
-                        });
-                        if (ctx.mounted) Navigator.pop(ctx);
-                        _loadDashboard();
+                        try {
+                          await _backendService.setClosingDayOverride(
+                            _currentDate.month,
+                            _currentDate.year,
+                            day,
+                          );
+                          setState(() {
+                            _closingDay = day;
+                          });
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          _loadDashboard();
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Error: $e')),
+                            );
+                          }
+                        }
                       },
                     );
                   },
@@ -140,13 +158,23 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               TextButton(
                 onPressed: () async {
-                  final prefs = await SharedPreferences.getInstance();
-                  await prefs.remove(_closingDayKey);
-                  setState(() {
-                    _closingDay = null; // Reset to default
-                  });
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  _loadDashboard();
+                  try {
+                    await _backendService.deleteClosingDayOverride(
+                      _currentDate.month,
+                      _currentDate.year,
+                    );
+                    setState(() {
+                      _closingDay = null; // Reset to default
+                    });
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    _loadDashboard();
+                  } catch (e) {
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e')),
+                      );
+                    }
+                  }
                 },
                 child: const Text('Reset to Default (23)'),
               ),

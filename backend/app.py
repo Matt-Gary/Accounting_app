@@ -20,6 +20,7 @@ def get_payment_methods():
 
 from service.earnings_service import fetch_earnings_for_period, add_earning
 from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment, get_portfolio_distribution_by_type
+from service.closing_day_service import get_closing_day_for_month, set_closing_day_for_month, delete_closing_day_for_month
 from datetime import timedelta, date
 
 # ============= RECURRING EXPENSES LOGIC =============
@@ -285,9 +286,15 @@ def dashboard():
         
     user_id = request.args.get('user_id')
     
-    # Optional closing day override (1-31)
+    # Check for month-specific closing day override in database
+    db_override = get_closing_day_for_month(month, year)
+    
+    # Optional closing day override from query parameter (for backwards compatibility)
     closing_day_arg = request.args.get('closing_day')
-    closing_day = int(closing_day_arg) if closing_day_arg and closing_day_arg.strip() else None
+    query_override = int(closing_day_arg) if closing_day_arg and closing_day_arg.strip() else None
+    
+    # Priority: database override > query parameter override > None (will use default 23)
+    closing_day = db_override if db_override is not None else query_override
 
     expenses = fetch_expenses_for_period(month, year, user_id, closing_day_override=closing_day)
     earnings = fetch_earnings_for_period(month, year, user_id)
@@ -656,6 +663,70 @@ def monthly_report():
         as_attachment=True,
         download_name=filename
     )
+
+# ============= CLOSING DAY OVERRIDE ENDPOINTS =============
+
+@app.route('/closing-day-overrides', methods=['GET'])
+def get_closing_day_override():
+    """Get the closing day override for a specific month/year."""
+    try:
+        month = int(request.args.get('month'))
+        year = int(request.args.get('year'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Missing or invalid month/year"}), 400
+    
+    closing_day = get_closing_day_for_month(month, year)
+    
+    if closing_day is not None:
+        return jsonify({"month": month, "year": year, "closing_day": closing_day}), 200
+    else:
+        return jsonify({"month": month, "year": year, "closing_day": None}), 200
+
+
+@app.route('/closing-day-overrides', methods=['POST'])
+def set_closing_day_override():
+    """Set (upsert) the closing day override for a specific month/year."""
+    data = request.json
+    
+    if not data or 'month' not in data or 'year' not in data or 'closing_day' not in data:
+        return jsonify({"error": "Missing required fields: month, year, closing_day"}), 400
+    
+    try:
+        month = int(data['month'])
+        year = int(data['year'])
+        closing_day = int(data['closing_day'])
+        
+        # Validate ranges
+        if not (1 <= month <= 12):
+            return jsonify({"error": "Month must be between 1 and 12"}), 400
+        if not (2000 <= year <= 2100):
+            return jsonify({"error": "Year must be between 2000 and 2100"}), 400
+        if not (1 <= closing_day <= 31):
+            return jsonify({"error": "Closing day must be between 1 and 31"}), 400
+        
+        result = set_closing_day_for_month(month, year, closing_day)
+        return jsonify(result), 200
+    except ValueError:
+        return jsonify({"error": "Invalid data types"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/closing-day-overrides', methods=['DELETE'])
+def delete_closing_day_override():
+    """Delete the closing day override for a specific month/year."""
+    try:
+        month = int(request.args.get('month'))
+        year = int(request.args.get('year'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Missing or invalid month/year"}), 400
+    
+    deleted = delete_closing_day_for_month(month, year)
+    
+    if deleted:
+        return jsonify({"message": "Override deleted successfully"}), 200
+    else:
+        return jsonify({"message": "No override found for this month/year"}), 404
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get("PORT", 5000)))
