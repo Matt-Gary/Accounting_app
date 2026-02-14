@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/backend_service.dart';
 import '../repositories/accounting_repository.dart';
 import 'add_expense_screen.dart';
@@ -26,9 +27,19 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _selectedCategory;
   int? _closingDay;
 
+  static const String _closingDayKey = 'closing_day';
+
   @override
   void initState() {
     super.initState();
+    _loadClosingDay();
+  }
+
+  Future<void> _loadClosingDay() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _closingDay = prefs.getInt(_closingDayKey);
+    });
     _loadDashboard();
   }
 
@@ -114,11 +125,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       trailing: _closingDay == day
                           ? const Icon(Icons.check, color: Colors.blue)
                           : null,
-                      onTap: () {
+                      onTap: () async {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setInt(_closingDayKey, day);
                         setState(() {
                           _closingDay = day;
                         });
-                        Navigator.pop(ctx);
+                        if (ctx.mounted) Navigator.pop(ctx);
                         _loadDashboard();
                       },
                     );
@@ -126,11 +139,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               TextButton(
-                onPressed: () {
+                onPressed: () async {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.remove(_closingDayKey);
                   setState(() {
                     _closingDay = null; // Reset to default
                   });
-                  Navigator.pop(ctx);
+                  if (ctx.mounted) Navigator.pop(ctx);
                   _loadDashboard();
                 },
                 child: const Text('Reset to Default (23)'),
