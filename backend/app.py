@@ -204,14 +204,23 @@ def get_distribution():
 
 # Helper function to fetch and filter expenses
 def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=None):
-    # Retrieve default logic to determine query range
-    # If we have an override, we must assume the range needs to start earlier if the closing day is small (like 1st),
-    # or just use the override for query range calculation too.
-    # Safe bet: If override is provided, use it for range calculation too.
-    # Default fallback is 23 if not provided.
-    
-    query_closing_day = closing_day_override if closing_day_override is not None else 23
-    
+    # To build the correct query window, we need the PREVIOUS month's closing day.
+    # Example: viewing March with default closing_day=23 would start the window at Feb 23.
+    # But if February had a closing_day override of 20, an expense on Feb 20 belongs to
+    # March (20 >= 20), yet would be missed because the window starts at Feb 23.
+    # Fix: always use the previous month's closing day for the query window start.
+    from dateutil.relativedelta import relativedelta as _rd
+    prev_month_date = date(year, month, 1) - _rd(months=1)
+    prev_month_override = get_closing_day_for_month(prev_month_date.month, prev_month_date.year)
+    # Determine which closing day to use for the query range start (prev month's day)
+    # and for the billing-period assignment (current month's override or pm default)
+    if prev_month_override is not None:
+        query_closing_day = prev_month_override
+    elif closing_day_override is not None:
+        query_closing_day = closing_day_override
+    else:
+        query_closing_day = 23
+
     start_date, end_date = get_query_range_for_month(month, year, closing_day=query_closing_day)
     
     # Fix: Use .lt() with the start of the next day to include the entire end_date
@@ -245,24 +254,32 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
     for exp in raw_expenses:
         spent_at_date = parse(exp['spent_at']).date()
         pm_info = exp['payment_methods']
-        
-        # LOGIC:
-        # If the user provided a specific 'closing_day_override' via the dashboard dropdown, use that.
-        # Otherwise, fallback to the database's 'pm_info.closing_day'.
-        # Finally, fallback to 23.
-        
-        # Note: The requirement is "change this day depending of the month" via dropdown.
-        # This implies the dropdown override takes precedence over the DB setting for credit cards.
-        
-        effective_closing_day = 23 # absolute fallback
-        if closing_day_override is not None:
-             effective_closing_day = closing_day_override
+
+        # CRITICAL: The closing day used to assign billing period must come from the
+        # MONTH IN WHICH THE EXPENSE FALLS, not the month being viewed.
+        #
+        # Example: expense on Feb 20, February override=20 → belongs to March (20>=20).
+        # When viewing March (no override → pm_default=23):
+        #   Old wrong logic: 20 >= 23 → False → assigns to February (wrong!)
+        #   New correct logic: expense is in prev month → use prev_month_override=20 → 20>=20 → March ✓
+        #
+        # If the expense falls in the previous month, use that month's closing day override.
+        # If it falls in the current billing month, use the current month's closing day override.
+        exp_in_prev_month = (spent_at_date.month == prev_month_date.month and
+                             spent_at_date.year == prev_month_date.year)
+
+        if exp_in_prev_month:
+            # Use previous month's closing day (override if set, else pm default)
+            effective_closing_day = prev_month_override if prev_month_override is not None \
+                else pm_info.get('closing_day', 23) or 23
         else:
-             effective_closing_day = pm_info.get('closing_day', 23) or 23
+            # Use current viewing month's closing day (override if set, else pm default)
+            effective_closing_day = closing_day_override if closing_day_override is not None \
+                else pm_info.get('closing_day', 23) or 23
 
         b_month, b_year = get_billing_period(
-            spent_at_date, 
-            pm_info['is_credit_card'], 
+            spent_at_date,
+            pm_info['is_credit_card'],
             effective_closing_day
         )
         
