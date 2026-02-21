@@ -96,10 +96,13 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
 
       if (installments > 1) {
         final List<Expense> expenses = [];
+        // Round to 2 decimal places (e.g. 15 / 4 = 3.75)
         final double installmentAmount =
-            (amount / installments).floorToDouble();
-        final double lastInstallmentAmount =
-            amount - (installmentAmount * (installments - 1));
+            (amount / installments * 100).round() / 100;
+        // Last installment absorbs any rounding remainder to keep total exact
+        final double lastInstallmentAmount = double.parse(
+            (amount - (installmentAmount * (installments - 1)))
+                .toStringAsFixed(2));
 
         for (int i = 0; i < installments; i++) {
           final isLast = i == installments - 1;
