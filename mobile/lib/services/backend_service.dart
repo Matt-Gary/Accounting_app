@@ -5,8 +5,8 @@ import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  static const String baseUrl = 'http://127.0.0.1:5000';
-  //static const String baseUrl = 'http://69.62.101.177:5005';
+  //static const String baseUrl = 'http://127.0.0.1:5000';
+  static const String baseUrl = 'http://72.60.137.97:5005';
 
   Future<DashboardData> getDashboard(
       {required int month,
@@ -129,6 +129,31 @@ class BackendService {
 
     if (response.statusCode != 200) {
       throw Exception('Failed to set closing day override: ${response.body}');
+    }
+  }
+
+  Future<void> deleteRecurringExpense(String id) async {
+    final uri = Uri.parse('$baseUrl/recurring-expenses/$id');
+    final response = await http.delete(uri);
+
+    if (response.statusCode != 200) {
+      throw Exception(
+          'Failed to delete recurring expense: ${response.body}');
+    }
+  }
+
+  Future<void> updateRecurringExpense(
+      String id, Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/recurring-expenses/$id');
+    final response = await http.put(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(data),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception(
+          'Failed to update recurring expense: ${response.body}');
     }
   }
 

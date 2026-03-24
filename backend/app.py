@@ -487,15 +487,17 @@ def delete_recurring(rid):
             .execute()
         print(f"[DEBUG] Found {check_res.count if hasattr(check_res, 'count') else 'unknown'} linked expenses")
         
+        from dateutil.relativedelta import relativedelta
         today = date.today()
-        first_of_month = date(today.year, today.month, 1)
-        
-        # 1. Delete future materialized expenses (from start of current month)
+        first_of_next_month = date(today.year, today.month, 1) + relativedelta(months=1)
+
+        # 1. Delete FUTURE materialized expenses only (from start of next month)
+        # Current month expenses are kept so they appear in the current billing period
         print("[DEBUG] Deleting future expenses...")
         res_del = client.from_("expenses")\
             .delete()\
             .eq("recurring_id", rid)\
-            .gte("spent_at", first_of_month.isoformat())\
+            .gte("spent_at", first_of_next_month.isoformat())\
             .execute()
         print(f"[DEBUG] Delete response: {res_del}")
 
