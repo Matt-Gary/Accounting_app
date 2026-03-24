@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../repositories/accounting_repository.dart';
+import '../services/backend_service.dart';
 
 class RecurringExpensesScreen extends StatefulWidget {
   const RecurringExpensesScreen({super.key});
@@ -12,6 +13,7 @@ class RecurringExpensesScreen extends StatefulWidget {
 
 class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
   final _repository = AccountingRepository();
+  final _backendService = BackendService();
   bool _isLoading = false;
   List<RecurringExpense> _recurringExpenses = [];
   List<UserProfile> _users = [];
@@ -69,7 +71,7 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
 
     if (confirmed == true && expense.id != null) {
       try {
-        await _repository.deleteRecurringExpense(expense.id!);
+        await _backendService.deleteRecurringExpense(expense.id!);
         _loadData();
       } catch (e) {
         if (mounted) {
@@ -199,6 +201,7 @@ class _RecurringFormState extends State<RecurringForm> {
   final _descController = TextEditingController();
   final _dayController = TextEditingController();
   final _repository = AccountingRepository();
+  final _backendService = BackendService();
 
   late UserProfile _selectedUser;
   late Category _selectedCategory;
@@ -257,7 +260,10 @@ class _RecurringFormState extends State<RecurringForm> {
       if (widget.expense == null) {
         await _repository.addRecurringExpense(expense);
       } else {
-        await _repository.updateRecurringExpense(expense);
+        await _backendService.updateRecurringExpense(
+          widget.expense!.id!,
+          expense.toJson(),
+        );
       }
 
       widget.onSave();
