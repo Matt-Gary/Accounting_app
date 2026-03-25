@@ -143,18 +143,10 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                           Switch(
                             value: item.active,
                             onChanged: (val) async {
-                              final updated = RecurringExpense(
-                                id: item.id,
-                                userId: item.userId,
-                                amount: item.amount,
-                                categoryKey: item.categoryKey,
-                                paymentMethodId: item.paymentMethodId,
-                                description: item.description,
-                                dayOfMonth: item.dayOfMonth,
-                                active: val,
-                                createdAt: item.createdAt,
+                              await _backendService.updateRecurringExpense(
+                                item.id!,
+                                {'active': val},
                               );
-                              await _repository.updateRecurringExpense(updated);
                               _loadData();
                             },
                           ),
