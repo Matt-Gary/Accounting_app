@@ -1,3 +1,4 @@
+from datetime import datetime
 from service.database import get_pg
 
 def get_closing_day_for_month(month: int, year: int) -> int | None:
@@ -26,7 +27,7 @@ def set_closing_day_for_month(month: int, year: int, closing_day: int) -> dict:
         # Update existing
         res = client.from_("closing_day_overrides").update({
             "closing_day": closing_day,
-            "updated_at": "NOW()"
+            "updated_at": datetime.utcnow().isoformat()
         }).eq("month", month).eq("year", year).execute()
     else:
         # Insert new

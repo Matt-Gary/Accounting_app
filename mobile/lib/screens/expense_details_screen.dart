@@ -15,6 +15,27 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
   final _repository = AccountingRepository();
 
   Future<void> _deleteExpense() async {
+    // Block deletion of recurring-linked expenses
+    if (widget.expense['recurring_id'] != null) {
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Cannot Delete"),
+          content: const Text(
+              "This expense is auto-generated from a recurring definition. "
+              "It will reappear next time the dashboard loads. "
+              "To stop it permanently, deactivate the recurring expense in Recurring Expenses settings."),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("OK"),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(

@@ -109,12 +109,14 @@ def materialize_recurring_expenses(month, year, user_id):
                 "amount": rdef['amount'],
                 "category_key": rdef['category_key'],
                 "payment_method_id": rdef['payment_method_id'],
-                # "description": rdef['description'], # expenses table doesn't have description, likely uses comment
                 "spent_at": target_date.isoformat(),
                 "recurring_id": rid,
                 "comment": f"Recurring: {rdef['description'] or ''}".strip()
             }
-            client.from_("expenses").insert(new_exp).execute()
+            try:
+                client.from_("expenses").insert(new_exp).execute()
+            except Exception as e:
+                print(f"[ERROR] Failed to materialize recurring {rid} for {target_date}: {e}")
 
 # =====================================================
 
@@ -479,6 +481,27 @@ def update_recurring(rid):
                      .select("id")\
                      .execute()
                  print(f"[DEBUG] Expenses update executed. Updated count: {len(update_res.data) if update_res.data else 0}")
+
+            # If day_of_month changed, update spent_at of future materialized expenses
+            if 'day_of_month' in data:
+                import calendar
+                new_day = data['day_of_month']
+                future_expenses = client.from_("expenses")\
+                    .select("id, spent_at")\
+                    .eq("recurring_id", rid)\
+                    .gte("spent_at", first_of_month.isoformat())\
+                    .execute().data or []
+
+                print(f"[DEBUG] Updating spent_at for {len(future_expenses)} expenses to day {new_day}")
+                for exp in future_expenses:
+                    old_date = parse(exp['spent_at']).date()
+                    last_day = calendar.monthrange(old_date.year, old_date.month)[1]
+                    safe_day = min(new_day, last_day)
+                    new_date = old_date.replace(day=safe_day)
+                    client.from_("expenses")\
+                        .update({"spent_at": new_date.isoformat()})\
+                        .eq("id", exp['id'])\
+                        .execute()
         else:
              print("[WARN] Update succeeded but returned no data? Check if ID exists or RLS.")
 
