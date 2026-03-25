@@ -221,6 +221,19 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
     else:
         query_closing_day = 23
 
+    # Widen query window to account for credit cards with lower closing days.
+    # Without this, expenses between a PM's closing_day and query_closing_day
+    # in the previous month would never be fetched for the next billing period.
+    payment_methods = get_payment_methods()
+    cc_closing_days = [
+        pm.get('closing_day') or 23
+        for pm in payment_methods.values()
+        if pm.get('is_credit_card')
+    ]
+    if cc_closing_days:
+        min_cc_closing_day = min(cc_closing_days)
+        query_closing_day = min(query_closing_day, min_cc_closing_day)
+
     start_date, end_date = get_query_range_for_month(month, year, closing_day=query_closing_day)
     
     # Fix: Use .lt() with the start of the next day to include the entire end_date
