@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find c:ProjectsAccounting_appAccounting_app -name *.sql -o -name *schema* -o -name *migration*)",
+      "Bash(find /c/Projects/Accounting_app/Accounting_app -name *schema* -o -name *migration* -o -name *.sql)"
+    ]
+  }
+}

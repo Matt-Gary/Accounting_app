@@ -108,6 +108,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showClosingDayPicker() {
+    final daysInMonth = DateUtils.getDaysInMonth(
+        _currentDate.year, _currentDate.month);
     showModalBottomSheet(
       context: context,
       builder: (ctx) {
@@ -123,7 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 10),
               Expanded(
                 child: ListView.builder(
-                  itemCount: 31,
+                  itemCount: daysInMonth,
                   itemBuilder: (context, index) {
                     final day = index + 1;
                     return ListTile(
@@ -620,8 +622,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildTotalCard() {
-    final filteredSpent = _getFilteredTotalSpent();
-    final balance = _dashboardData!.totalEarned - filteredSpent;
+    final balance = _dashboardData!.totalEarned - _dashboardData!.totalSpent;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
@@ -686,6 +687,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Map<String, double> _getFilteredCategoryBreakdown() {
+    if (_selectedCategory == null) {
+      return _dashboardData!.categoryBreakdown;
+    }
+    final filtered = _getFilteredExpenses();
+    final Map<String, double> breakdown = {};
+    for (final e in filtered) {
+      final label = e['category_label'] as String? ?? 'Unknown';
+      final amount = (e['amount'] as num).toDouble();
+      breakdown[label] = (breakdown[label] ?? 0.0) + amount;
+    }
+    return breakdown;
+  }
+
   List<PieChartSectionData> _getChartSections() {
     final List<Color> colors = [
       Colors.blue,
@@ -696,8 +711,9 @@ class _HomeScreenState extends State<HomeScreen> {
       Colors.teal
     ];
     int i = 0;
+    final breakdown = _getFilteredCategoryBreakdown();
 
-    return _dashboardData!.categoryBreakdown.entries.map((entry) {
+    return breakdown.entries.map((entry) {
       final color = colors[i % colors.length];
       i++;
       return PieChartSectionData(

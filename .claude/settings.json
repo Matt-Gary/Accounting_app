@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"CREATE TABLE.*expenses\\\\|create table.*expenses\" /c/Projects/Accounting_app/Accounting_app/backend/*.sql)",
+      "Bash(ls -la /c/Projects/Accounting_app/Accounting_app/backend/*.sql)",
+      "Bash(find /c/Projects/Accounting_app/Accounting_app -name *.sql -o -name *schema* -o -name *migration*)"
+    ]
+  }
+}

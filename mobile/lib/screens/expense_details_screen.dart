@@ -58,10 +58,10 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
       try {
         await _repository.deleteExpense(widget.expense['id']);
         if (mounted) {
-          Navigator.pop(context, true); // Return true to indicate deletion
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Expense deleted successfully')),
           );
+          Navigator.pop(context, true); // Return true to indicate deletion
         }
       } catch (e) {
         if (mounted) {

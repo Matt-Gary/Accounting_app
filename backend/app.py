@@ -80,15 +80,14 @@ def materialize_recurring_expenses(month, year, user_id):
         
         print(f"[DEBUG] Target date: {target_date}")
 
-        # Don't backdate: only allow expenses within 1 day of creation (timezone buffer)
-        # If created Feb 1st, we allow Jan 31st (for UTC offsets) but not Jan 1st.
+        # Don't backdate: only allow expenses for the creation month or later.
+        # e.g. created on March 20 with day_of_month=5 → March 5 IS allowed (same month).
         created_at_date = parse(rdef['created_at']).date()
         print(f"[DEBUG] Created at: {created_at_date}")
-        
-        # Calculate strict cutoff: target must be >= created_at - 1 day
-        cutoff_slop = timedelta(days=1)
-        if target_date < (created_at_date - cutoff_slop):
-            print(f"[DEBUG] SKIPPING: Target {target_date} is before creation {created_at_date} (minus buffer)")
+
+        created_month_start = date(created_at_date.year, created_at_date.month, 1)
+        if target_date < created_month_start:
+            print(f"[DEBUG] SKIPPING: Target {target_date} is before creation month {created_month_start}")
             continue
         
         # Check if already materialized for this month
@@ -102,6 +101,22 @@ def materialize_recurring_expenses(month, year, user_id):
                     break
         
         if not already_created:
+            # Double-check with a fresh DB query to prevent duplicates from concurrent requests
+            month_start = date(year, month, 1)
+            if month == 12:
+                month_end = date(year + 1, 1, 1)
+            else:
+                month_end = date(year, month + 1, 1)
+            existing = client.from_("expenses")\
+                .select("id", count="exact")\
+                .eq("recurring_id", rid)\
+                .gte("spent_at", month_start.isoformat())\
+                .lt("spent_at", month_end.isoformat())\
+                .execute()
+            if existing.data and len(existing.data) > 0:
+                print(f"[DEBUG] SKIPPING: Fresh DB check found existing expense for {rid} in {month}/{year}")
+                continue
+
             print(f"[DEBUG] MATERIALIZING: Creating expense for {target_date}")
             # Create the expense
             new_exp = {
@@ -268,7 +283,7 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
     filtered = []
     for exp in raw_expenses:
         spent_at_date = parse(exp['spent_at']).date()
-        pm_info = exp['payment_methods']
+        pm_info = exp.get('payment_methods') or {'name': 'Unknown', 'is_credit_card': False, 'closing_day': None}
 
         # CRITICAL: The closing day used to assign billing period must come from the
         # MONTH IN WHICH THE EXPENSE FALLS, not the month being viewed.
@@ -301,9 +316,9 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
         if b_month == month and b_year == year:
             # Flatten for report
             flat_exp = exp.copy()
-            flat_exp['category_label'] = exp['categories']['label']
-            flat_exp['payment_method_name'] = pm_info['name']
-            flat_exp['user_name'] = exp['profiles']['name'] # Add User Name
+            flat_exp['category_label'] = (exp.get('categories') or {}).get('label', 'Unknown')
+            flat_exp['payment_method_name'] = pm_info.get('name', 'Unknown')
+            flat_exp['user_name'] = (exp.get('profiles') or {}).get('name', 'Unknown')
             filtered.append(flat_exp)
             
     return filtered
@@ -445,10 +460,11 @@ def update_recurring(rid):
         print(f"[DEBUG] UPDATED RECURRING RESULT: {updated_recurring}")
 
         if updated_recurring:
-            # Propagate changes to future expenses (from start of current month)
+            # Propagate changes to future expenses only (from start of next month)
+            from dateutil.relativedelta import relativedelta
             today = date.today()
-            first_of_month = date(today.year, today.month, 1)
-            print(f"[DEBUG] Propagating changes from {first_of_month}")
+            first_of_next_month = date(today.year, today.month, 1) + relativedelta(months=1)
+            print(f"[DEBUG] Propagating changes from {first_of_next_month}")
 
             # Build update payload for expenses
             expense_updates = {}
@@ -470,14 +486,14 @@ def update_recurring(rid):
                  target_check = client.from_("expenses")\
                      .select("id, spent_at")\
                      .eq("recurring_id", rid)\
-                     .gte("spent_at", first_of_month.isoformat())\
+                     .gte("spent_at", first_of_next_month.isoformat())\
                      .execute()
                  print(f"[DEBUG] Target expenses found: {len(target_check.data) if target_check.data else 0}")
-                 
+
                  update_res = client.from_("expenses")\
                      .update(expense_updates)\
                      .eq("recurring_id", rid)\
-                     .gte("spent_at", first_of_month.isoformat())\
+                     .gte("spent_at", first_of_next_month.isoformat())\
                      .select("id")\
                      .execute()
                  print(f"[DEBUG] Expenses update executed. Updated count: {len(update_res.data) if update_res.data else 0}")
@@ -489,7 +505,7 @@ def update_recurring(rid):
                 future_expenses = client.from_("expenses")\
                     .select("id, spent_at")\
                     .eq("recurring_id", rid)\
-                    .gte("spent_at", first_of_month.isoformat())\
+                    .gte("spent_at", first_of_next_month.isoformat())\
                     .execute().data or []
 
                 print(f"[DEBUG] Updating spent_at for {len(future_expenses)} expenses to day {new_day}")
@@ -582,7 +598,14 @@ def monthly_report():
         return jsonify({"error": "Missing or invalid month/year"}), 400
         
     user_id = request.args.get('user_id')
-    expenses = fetch_expenses_for_period(month, year, user_id)
+
+    # Use same closing day logic as dashboard so report matches what user sees
+    db_override = get_closing_day_for_month(month, year)
+    closing_day_arg = request.args.get('closing_day')
+    query_override = int(closing_day_arg) if closing_day_arg and closing_day_arg.strip() else None
+    closing_day = db_override if db_override is not None else query_override
+
+    expenses = fetch_expenses_for_period(month, year, user_id, closing_day_override=closing_day)
     earnings = fetch_earnings_for_period(month, year, user_id)
     
     # Calculate totals
@@ -758,6 +781,11 @@ def set_closing_day_override():
             return jsonify({"error": "Year must be between 2000 and 2100"}), 400
         if not (1 <= closing_day <= 31):
             return jsonify({"error": "Closing day must be between 1 and 31"}), 400
+
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        if closing_day > last_day:
+            return jsonify({"error": f"Month {month}/{year} only has {last_day} days"}), 400
         
         result = set_closing_day_for_month(month, year, closing_day)
         return jsonify(result), 200
