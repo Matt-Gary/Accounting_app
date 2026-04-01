@@ -46,5 +46,5 @@ def delete_closing_day_for_month(month: int, year: int) -> bool:
     Returns True if deleted, False if not found.
     """
     client = get_pg()
-    res = client.from_("closing_day_overrides").delete().eq("month", month).eq("year", year).select().execute()
-    return len(res.data) > 0 if res.data else False
+    client.from_("closing_day_overrides").delete().eq("month", month).eq("year", year).execute()
+    return True

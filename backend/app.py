@@ -454,8 +454,10 @@ def update_recurring(rid):
         client = get_pg()
         # Specific updates like 'active', 'amount', etc.
         # Chain .select() to ensure we get the updated record back
-        res = client.from_("recurring_expenses").update(data).eq("id", rid).select().execute()
-        updated_recurring = res.data[0] if res.data else None
+        client.from_("recurring_expenses").update(data).eq("id", rid).execute()
+        # Fetch the updated record separately since .select() after .eq() is not supported
+        updated_res = client.from_("recurring_expenses").select("*").eq("id", rid).execute()
+        updated_recurring = updated_res.data[0] if updated_res.data else None
         
         print(f"[DEBUG] UPDATED RECURRING RESULT: {updated_recurring}")
 
@@ -539,29 +541,25 @@ def delete_recurring(rid):
             .execute()
         print(f"[DEBUG] Found {check_res.count if hasattr(check_res, 'count') else 'unknown'} linked expenses")
         
-        from dateutil.relativedelta import relativedelta
         today = date.today()
-        first_of_next_month = date(today.year, today.month, 1) + relativedelta(months=1)
+        first_of_this_month = date(today.year, today.month, 1)
 
-        # 1. Delete FUTURE materialized expenses only (from start of next month)
-        # Current month expenses are kept so they appear in the current billing period
-        print("[DEBUG] Deleting future expenses...")
-        res_del = client.from_("expenses")\
+        # 1. Delete current month + future materialized expenses
+        print("[DEBUG] Deleting current and future expenses...")
+        client.from_("expenses")\
             .delete()\
             .eq("recurring_id", rid)\
-            .gte("spent_at", first_of_next_month.isoformat())\
+            .gte("spent_at", first_of_this_month.isoformat())\
             .execute()
-        print(f"[DEBUG] Delete response: {res_del}")
+        print("[DEBUG] Delete executed")
 
-        # 2. Unlink ANY remaining expenses - MUST use .select() to make update return data
-        print("[DEBUG] Unlinking remaining expenses...")
-        res_unlink = client.from_("expenses")\
+        # 2. Unlink past expenses (keep them as regular expenses)
+        print("[DEBUG] Unlinking past expenses...")
+        client.from_("expenses")\
             .update({"recurring_id": None})\
             .eq("recurring_id", rid)\
-            .select("id")\
             .execute()
-        print(f"[DEBUG] Unlinked {len(res_unlink.data) if res_unlink.data else 0} remaining expenses")
-        print(f"[DEBUG] Unlink response: {res_unlink}")
+        print("[DEBUG] Unlink executed")
 
         # 3. Verify no expenses are still linked
         verify_res = client.from_("expenses")\

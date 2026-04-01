@@ -5,8 +5,8 @@ import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  //static const String baseUrl = 'http://127.0.0.1:5000';
-  static const String baseUrl = 'http://72.60.137.97:5005';
+  static const String baseUrl = 'http://127.0.0.1:5000';
+  //static const String baseUrl = 'http://72.60.137.97:5005';
 
   Future<DashboardData> getDashboard(
       {required int month,
@@ -137,8 +137,7 @@ class BackendService {
     final response = await http.delete(uri);
 
     if (response.statusCode != 200) {
-      throw Exception(
-          'Failed to delete recurring expense: ${response.body}');
+      throw Exception('Failed to delete recurring expense: ${response.body}');
     }
   }
 
@@ -152,8 +151,7 @@ class BackendService {
     );
 
     if (response.statusCode != 200) {
-      throw Exception(
-          'Failed to update recurring expense: ${response.body}');
+      throw Exception('Failed to update recurring expense: ${response.body}');
     }
   }
 

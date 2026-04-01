@@ -143,11 +143,18 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                           Switch(
                             value: item.active,
                             onChanged: (val) async {
-                              await _backendService.updateRecurringExpense(
-                                item.id!,
-                                {'active': val},
-                              );
-                              _loadData();
+                              final messenger = ScaffoldMessenger.of(context);
+                              try {
+                                await _backendService.updateRecurringExpense(
+                                  item.id!,
+                                  {'active': val},
+                                );
+                                _loadData();
+                              } catch (e) {
+                                messenger.showSnackBar(
+                                  SnackBar(content: Text('Error: $e')),
+                                );
+                              }
                             },
                           ),
                           IconButton(
