@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
-import '../repositories/accounting_repository.dart';
+import '../services/backend_service.dart';
 
 class AddInvestmentScreen extends StatefulWidget {
   final UserProfile? currentUser;
   final Investment? investmentToEdit;
 
   const AddInvestmentScreen({
-    Key? key,
-    required this.currentUser,
+    super.key,
+    this.currentUser,
     this.investmentToEdit,
-  }) : super(key: key);
+  });
 
   @override
   State<AddInvestmentScreen> createState() => _AddInvestmentScreenState();
@@ -18,7 +18,7 @@ class AddInvestmentScreen extends StatefulWidget {
 
 class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _repository = AccountingRepository();
+  final _backendService = BackendService();
   bool _isLoading = false;
 
   final _nameController = TextEditingController();
@@ -57,10 +57,19 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (widget.currentUser == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('No user selected')));
-      return;
+
+    // Resolve user: use provided currentUser, or load from profiles
+    var user = widget.currentUser;
+    if (user == null) {
+      final familyData = await _backendService.getFamilyData();
+      if (familyData.profiles.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('No user profile found')));
+        }
+        return;
+      }
+      user = familyData.profiles.first;
     }
 
     setState(() => _isLoading = true);
@@ -72,12 +81,9 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
           double.tryParse(_costBasisController.text.replaceAll(',', '.')) ??
               0.0;
 
-      // Construct Investment object
-      // Note: Model expects JSON-friendly mostly, but we can use constructor
-      // We need to create a new object or use existing ID
       final inv = Investment(
         id: widget.investmentToEdit?.id,
-        userId: widget.currentUser!.id,
+        userId: user.id,
         type: _selectedType,
         name: _nameController.text,
         symbol: _symbolController.text.isEmpty
@@ -89,9 +95,9 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
       );
 
       if (widget.investmentToEdit == null) {
-        await _repository.addInvestment(inv);
+        await _backendService.addInvestment(inv.toJson());
       } else {
-        await _repository.updateInvestment(inv);
+        await _backendService.updateInvestmentById(inv.id!, inv.toJson());
       }
 
       if (mounted) {

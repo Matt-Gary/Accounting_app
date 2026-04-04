@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
-import '../repositories/accounting_repository.dart';
+import '../services/backend_service.dart';
 
 class AddEarningScreen extends StatefulWidget {
   const AddEarningScreen({Key? key}) : super(key: key);
@@ -12,7 +12,7 @@ class AddEarningScreen extends StatefulWidget {
 
 class _AddEarningScreenState extends State<AddEarningScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _repository = AccountingRepository();
+  final _backendService = BackendService();
 
   final TextEditingController _amountController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
@@ -30,10 +30,10 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
 
   Future<void> _loadData() async {
     try {
-      final users = await _repository.getProfiles();
+      final familyData = await _backendService.getFamilyData();
       if (mounted) {
         setState(() {
-          _users = users;
+          _users = familyData.profiles;
           if (_users.isNotEmpty) _selectedUser = _users.first;
         });
       }
@@ -78,7 +78,7 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
       );
 
       try {
-        await _repository.addEarning(newEarning);
+        await _backendService.addEarning(newEarning);
         if (mounted) {
           Navigator.of(context).pop(true);
         }

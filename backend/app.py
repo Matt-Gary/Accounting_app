@@ -1,7 +1,8 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, g
 from flask_cors import CORS
 from service.database import get_pg
 from service.billing_service import get_billing_period, get_query_range_for_month
+from middleware.auth import require_auth
 import pandas as pd
 import io
 import os
@@ -10,11 +11,16 @@ from dateutil.parser import parse
 app = Flask(__name__)
 CORS(app) # Enable CORS for all routes
 
-# Payment Methods Cache (Simplified for demo, locally cached or fetched per request)
-# Ideally, fetch from DB.
-def get_payment_methods():
+# Fetch payment methods scoped to a family: global (family_id IS NULL) + family-specific.
+# Keeping this scoped prevents unrelated families' credit card closing days from
+# accidentally widening the expense query window in fetch_expenses_for_period().
+def get_payment_methods(family_id=None):
     client = get_pg()
-    res = client.from_("payment_methods").select("*").execute()
+    if family_id:
+        res = client.from_("payment_methods").select("*")\
+            .or_(f"family_id.is.null,family_id.eq.{family_id}").execute()
+    else:
+        res = client.from_("payment_methods").select("*").is_("family_id", "null").execute()
     # Return dict mapping id -> method
     return {pm['id']: pm for pm in res.data}
 
@@ -139,88 +145,256 @@ def materialize_recurring_expenses(month, year, user_id):
 def health():
     return jsonify({"status": "ok"})
 
-# ... (Expenses Logic Omitted for brevity in search, but preserved in file via correct ranges) ...
-# Actually, I need to match the replacement properly.
-# The user wants to APPEND standard CRUD routes. I'll put them before the report route or at the end.
+# FAMILY DATA ENDPOINT
+@app.route('/family/data', methods=['GET'])
+@require_auth
+def get_family_data():
+    """Returns profiles, categories, and payment methods scoped to the authenticated family."""
+    client = get_pg()
+
+    profiles = []
+    if g.family_id:
+        members_res = client.from_("family_members").select("user_id").eq("family_id", g.family_id).execute()
+        auth_ids = [m['user_id'] for m in members_res.data]
+        if auth_ids:
+            profiles_res = client.from_("profiles").select("id, name, email").in_("auth_id", auth_ids).execute()
+            profiles = profiles_res.data
+    elif g.profile_id:
+        profile_res = client.from_("profiles").select("id, name, email").eq("id", g.profile_id).execute()
+        profiles = profile_res.data
+
+    if g.family_id:
+        # Global categories (family_id IS NULL) + this family's custom categories
+        cats_res = client.from_("categories")\
+            .select("key, label, sort_order, family_id")\
+            .or_(f"family_id.is.null,family_id.eq.{g.family_id}")\
+            .order("label").execute()
+        hidden_res = client.from_("family_category_hidden")\
+            .select("category_key").eq("family_id", g.family_id).execute()
+        hidden_keys = {r["category_key"] for r in (hidden_res.data or [])}
+        visible_cats = [c for c in (cats_res.data or []) if c["key"] not in hidden_keys]
+        methods_res = client.from_("payment_methods").select("id, name, is_credit_card, closing_day").or_(f"family_id.is.null,family_id.eq.{g.family_id}").execute()
+    else:
+        visible_cats = client.from_("categories").select("key, label, sort_order")\
+            .is_("family_id", "null").order("label").execute().data or []
+        methods_res = client.from_("payment_methods").select("id, name, is_credit_card, closing_day").execute()
+
+    return jsonify({
+        "profiles": profiles,
+        "categories": visible_cats,
+        "payment_methods": methods_res.data
+    })
+
+# CATEGORY MANAGEMENT ENDPOINTS
+
+@app.route('/categories', methods=['GET'])
+@require_auth
+def list_categories():
+    """Full category list for the management UI — includes is_global and is_hidden flags."""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    client = get_pg()
+    cats = client.from_("categories")\
+        .select("key, label, sort_order, family_id")\
+        .or_(f"family_id.is.null,family_id.eq.{g.family_id}")\
+        .order("label").execute().data or []
+    hidden_res = client.from_("family_category_hidden")\
+        .select("category_key").eq("family_id", g.family_id).execute()
+    hidden_keys = {r["category_key"] for r in (hidden_res.data or [])}
+    result = [
+        {
+            "key": c["key"],
+            "label": c["label"],
+            "sort_order": c["sort_order"],
+            "is_global": c["family_id"] is None,
+            "is_hidden": c["key"] in hidden_keys,
+        }
+        for c in cats
+    ]
+    return jsonify(result), 200
+
+@app.route('/categories', methods=['POST'])
+@require_auth
+def create_category():
+    """Creates a custom category scoped to this family."""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    data = request.json or {}
+    label = (data.get('label') or '').strip()
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+    import uuid as _uuid
+    family_prefix = g.family_id.replace('-', '')[:8]
+    custom_key = f"custom_{family_prefix}_{_uuid.uuid4().hex[:12]}"
+    client = get_pg()
+    existing = client.from_("categories")\
+        .select("sort_order")\
+        .or_(f"family_id.is.null,family_id.eq.{g.family_id}")\
+        .order("sort_order", desc=True).limit(1).execute().data
+    next_order = (existing[0]["sort_order"] + 1) if existing else 100
+    try:
+        res = client.from_("categories").insert({
+            "key": custom_key,
+            "label": label,
+            "sort_order": next_order,
+            "family_id": g.family_id,
+        }).execute()
+        return jsonify(res.data[0]), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/categories/<category_key>', methods=['DELETE'])
+@require_auth
+def delete_category(category_key):
+    """Deletes a custom (family-scoped) category. Refuses to delete global ones."""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    client = get_pg()
+    cat_res = client.from_("categories").select("key, family_id")\
+        .eq("key", category_key).limit(1).execute()
+    if not cat_res.data:
+        return jsonify({"error": "Category not found"}), 404
+    cat = cat_res.data[0]
+    if cat["family_id"] != g.family_id:
+        return jsonify({"error": "Cannot delete a global category"}), 403
+    in_use = client.from_("expenses").select("id", count="exact")\
+        .eq("category_key", category_key).limit(1).execute()
+    if in_use.data and len(in_use.data) > 0:
+        return jsonify({"error": "Category is in use by existing expenses"}), 409
+    client.from_("categories").delete().eq("key", category_key).execute()
+    return jsonify({"message": "Deleted"}), 200
+
+@app.route('/categories/<category_key>/visibility', methods=['PUT'])
+@require_auth
+def set_category_visibility(category_key):
+    """Toggle a global category's visibility for this family. Body: { hidden: bool }"""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    data = request.json or {}
+    if 'hidden' not in data:
+        return jsonify({"error": "hidden (bool) is required"}), 400
+    client = get_pg()
+    cat_res = client.from_("categories").select("key, family_id")\
+        .eq("key", category_key).limit(1).execute()
+    if not cat_res.data:
+        return jsonify({"error": "Category not found"}), 404
+    if cat_res.data[0]["family_id"] is not None:
+        return jsonify({"error": "Visibility toggle only applies to global categories"}), 400
+    if data['hidden']:
+        client.from_("family_category_hidden").upsert(
+            {"family_id": g.family_id, "category_key": category_key},
+            on_conflict="family_id,category_key"
+        ).execute()
+    else:
+        client.from_("family_category_hidden").delete()\
+            .eq("family_id", g.family_id).eq("category_key", category_key).execute()
+    return jsonify({"category_key": category_key, "hidden": data['hidden']}), 200
+
+# EXPENSES ENDPOINTS
+@app.route('/expenses', methods=['POST'])
+@require_auth
+def create_expense():
+    data = request.json
+    required = ['amount', 'category_key', 'payment_method_id', 'spent_at']
+    for f in required:
+        if f not in data:
+            return jsonify({"error": f"Missing field: {f}"}), 400
+    if 'user_id' not in data:
+        data['user_id'] = g.profile_id
+    if g.family_id:
+        data['family_id'] = g.family_id
+    try:
+        client = get_pg()
+        res = client.from_("expenses").insert(data).execute()
+        return jsonify(res.data[0] if res.data else {}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/expenses/bulk', methods=['POST'])
+@require_auth
+def create_expenses_bulk():
+    items = request.json
+    if not isinstance(items, list) or len(items) == 0:
+        return jsonify({"error": "Expected a non-empty list"}), 400
+    for item in items:
+        if 'user_id' not in item:
+            item['user_id'] = g.profile_id
+        if g.family_id:
+            item['family_id'] = g.family_id
+    try:
+        client = get_pg()
+        res = client.from_("expenses").insert(items).execute()
+        return jsonify(res.data), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # INVESTMENTS ENDPOINTS
 @app.route('/investments', methods=['GET'])
+@require_auth
 def get_investments():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-    
     try:
-        portfolio = fetch_portfolio(user_id)
+        portfolio = fetch_portfolio(g.profile_id, family_id=g.family_id)
         return jsonify(portfolio)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/investments', methods=['POST'])
+@require_auth
 def create_investment():
     data = request.json
-    required_fields = ['user_id', 'type', 'name', 'quantity']
+    required_fields = ['type', 'name', 'quantity']
     for field in required_fields:
         if field not in data:
             return jsonify({"error": f"Missing field: {field}"}), 400
-            
+
     try:
-        res = add_investment(data['user_id'], data)
+        res = add_investment(g.profile_id, data, family_id=g.family_id)
         return jsonify(res), 201
     except Exception as e:
          return jsonify({"error": str(e)}), 500
 
 @app.route('/investments/<inv_id>', methods=['PUT'])
+@require_auth
 def edit_investment(inv_id):
     data = request.json
-    user_id = request.args.get('user_id') or data.get('user_id')
-    if not user_id:
-         return jsonify({"error": "user_id is required"}), 400
-         
     try:
         # Filter allowed fields
         allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type']
         updates = {k: v for k, v in data.items() if k in allowed}
-        
-        res = update_investment(inv_id, user_id, updates)
+
+        res = update_investment(inv_id, g.profile_id, updates)
         return jsonify(res)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/investments/<inv_id>', methods=['DELETE'])
+@require_auth
 def remove_investment(inv_id):
-    user_id = request.args.get('user_id')
-    if not user_id:
-         return jsonify({"error": "user_id is required"}), 400
-         
     try:
-        res = delete_investment(inv_id, user_id)
+        res = delete_investment(inv_id, g.profile_id)
         return jsonify(res)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/investments/distribution', methods=['GET'])
+@require_auth
 def get_distribution():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-    
     # Optional filter: investment_types as comma-separated string
     # Example: ?investment_types=stock,crypto
     types_param = request.args.get('investment_types')
     investment_types = None
     if types_param:
         investment_types = [t.strip() for t in types_param.split(',') if t.strip()]
-    
+
     try:
-        distribution = get_portfolio_distribution_by_type(user_id, investment_types)
+        distribution = get_portfolio_distribution_by_type(g.profile_id, investment_types, family_id=g.family_id)
         return jsonify(distribution)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # Helper function to fetch and filter expenses
-def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=None):
+def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=None, family_id=None):
     # To build the correct query window, we need the PREVIOUS month's closing day.
     # Example: viewing March with default closing_day=23 would start the window at Feb 23.
     # But if February had a closing_day override of 20, an expense on Feb 20 belongs to
@@ -241,7 +415,7 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
     # Widen query window to account for credit cards with lower closing days.
     # Without this, expenses between a PM's closing_day and query_closing_day
     # in the previous month would never be fetched for the next billing period.
-    payment_methods = get_payment_methods()
+    payment_methods = get_payment_methods(family_id=family_id)
     cc_closing_days = [
         pm.get('closing_day') or 23
         for pm in payment_methods.values()
@@ -264,12 +438,21 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
         .gte("spent_at", start_date.isoformat())\
         .lt("spent_at", query_end.isoformat())
         
-    if user_id:
-        # Auto-materialize for this specific user before fetching
+    if family_id:
+        # Family-scoped: materialize for all family members then filter by family_id
+        try:
+            family_users = client.from_("profiles").select("id").eq("family_id", family_id).execute().data
+            for user in family_users:
+                materialize_recurring_expenses(month, year, user['id'])
+        except Exception as e:
+            print(f"Error materializing for family: {e}")
+        query = query.eq("family_id", family_id)
+    elif user_id:
+        # Fallback: filter by specific user (for backwards compat / single-user case)
         materialize_recurring_expenses(month, year, user_id)
         query = query.eq("user_id", user_id)
     else:
-        # No user filter - materialize for ALL users
+        # No filter - materialize for all users (should not happen in normal flow)
         try:
             all_users = client.from_("profiles").select("id").execute().data
             for user in all_users:
@@ -324,27 +507,30 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
     return filtered
 
 @app.route('/dashboard', methods=['GET'])
+@require_auth
 def dashboard():
     try:
         month = int(request.args.get('month'))
         year = int(request.args.get('year'))
     except (TypeError, ValueError):
         return jsonify({"error": "Missing or invalid month/year"}), 400
-        
+
+    # Filter by family (shows all members); optional user_id narrows to one member
+    family_id = g.family_id
     user_id = request.args.get('user_id')
-    
+
     # Check for month-specific closing day override in database
     db_override = get_closing_day_for_month(month, year)
-    
+
     # Optional closing day override from query parameter (for backwards compatibility)
     closing_day_arg = request.args.get('closing_day')
     query_override = int(closing_day_arg) if closing_day_arg and closing_day_arg.strip() else None
-    
+
     # Priority: database override > query parameter override > None (will use default 23)
     closing_day = db_override if db_override is not None else query_override
 
-    expenses = fetch_expenses_for_period(month, year, user_id, closing_day_override=closing_day)
-    earnings = fetch_earnings_for_period(month, year, user_id)
+    expenses = fetch_expenses_for_period(month, year, user_id, closing_day_override=closing_day, family_id=family_id)
+    earnings = fetch_earnings_for_period(month, year, user_id, family_id=family_id)
     
     total_spent = sum(float(e['amount']) for e in expenses)
     total_earned = sum(float(e['amount']) for e in earnings)
@@ -381,16 +567,20 @@ def dashboard():
     })
 
 @app.route('/earnings', methods=['POST'])
+@require_auth
 def create_earning():
     data = request.json
-    required_fields = ['user_id', 'amount', 'earned_at']
+    required_fields = ['amount', 'earned_at']
     for field in required_fields:
         if field not in data:
             return jsonify({"error": f"Missing field: {field}"}), 400
-            
+
+    # Use profile_id from auth, allow override for family member
+    user_id = data.get('user_id', g.profile_id)
+
     try:
         new_earning = add_earning(
-            data['user_id'],
+            user_id,
             data['amount'],
             data.get('description'),
             data['earned_at']
@@ -400,15 +590,12 @@ def create_earning():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/expenses/<expense_id>', methods=['DELETE'])
+@require_auth
 def delete_expense(expense_id):
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-    
     try:
         client = get_pg()
         # Verify ownership before deletion
-        res = client.from_("expenses").delete().eq("id", expense_id).eq("user_id", user_id).execute()
+        client.from_("expenses").delete().eq("id", expense_id).eq("user_id", g.profile_id).execute()
         return jsonify({"message": "Expense deleted successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -417,13 +604,16 @@ def delete_expense(expense_id):
 # RECURRING EXPENSES ENDPOINTS
 
 @app.route('/recurring-expenses', methods=['GET'])
+@require_auth
 def list_recurring():
-    # Optional filtering by user_id
+    family_id = g.family_id
     user_id = request.args.get('user_id')
     try:
         client = get_pg()
-        query = client.from_("recurring_expenses").select("*, categories(label), payment_methods(name)")
-        if user_id:
+        query = client.from_("recurring_expenses").select("*, payment_methods(name)")
+        if family_id:
+            query = query.eq("family_id", family_id)
+        elif user_id:
             query = query.eq("user_id", user_id)
         res = query.execute()
         return jsonify(res.data)
@@ -431,25 +621,28 @@ def list_recurring():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/recurring-expenses', methods=['POST'])
+@require_auth
 def create_recurring():
     data = request.json
-    required = ['user_id', 'amount', 'category_key', 'payment_method_id', 'day_of_month']
+    required = ['amount', 'category_key', 'payment_method_id', 'day_of_month']
     for f in required:
         if f not in data:
             return jsonify({"error": f"Missing field: {f}"}), 400
+    # Use profile_id from auth, allow override for family member
+    if 'user_id' not in data:
+        data['user_id'] = g.profile_id
     try:
         client = get_pg()
-        # Add created_at explicitly (though DB defaults to Now)? DB default is fine.
         res = client.from_("recurring_expenses").insert(data).execute()
         return jsonify(res.data[0]), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/recurring-expenses/<rid>', methods=['PUT'])
+@require_auth
 def update_recurring(rid):
     data = request.json
     print(f"[DEBUG] UPDATE RECURRING id={rid} data={data}")
-    # We allow updating without user_id validation since no strict auth
     try:
         client = get_pg()
         # Specific updates like 'active', 'amount', etc.
@@ -529,6 +722,7 @@ def update_recurring(rid):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/recurring-expenses/<rid>', methods=['DELETE'])
+@require_auth
 def delete_recurring(rid):
     try:
         client = get_pg()
@@ -585,6 +779,7 @@ def delete_recurring(rid):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/report/monthly', methods=['GET'])
+@require_auth
 def monthly_report():
     """
     Export monthly report as Excel.
@@ -594,7 +789,8 @@ def monthly_report():
         year = int(request.args.get('year'))
     except (TypeError, ValueError):
         return jsonify({"error": "Missing or invalid month/year"}), 400
-        
+
+    family_id = g.family_id
     user_id = request.args.get('user_id')
 
     # Use same closing day logic as dashboard so report matches what user sees
@@ -603,8 +799,8 @@ def monthly_report():
     query_override = int(closing_day_arg) if closing_day_arg and closing_day_arg.strip() else None
     closing_day = db_override if db_override is not None else query_override
 
-    expenses = fetch_expenses_for_period(month, year, user_id, closing_day_override=closing_day)
-    earnings = fetch_earnings_for_period(month, year, user_id)
+    expenses = fetch_expenses_for_period(month, year, user_id, closing_day_override=closing_day, family_id=family_id)
+    earnings = fetch_earnings_for_period(month, year, user_id, family_id=family_id)
     
     # Calculate totals
     total_spent = sum(float(e['amount']) for e in expenses)
@@ -743,6 +939,7 @@ def monthly_report():
 # ============= CLOSING DAY OVERRIDE ENDPOINTS =============
 
 @app.route('/closing-day-overrides', methods=['GET'])
+@require_auth
 def get_closing_day_override():
     """Get the closing day override for a specific month/year."""
     try:
@@ -760,6 +957,7 @@ def get_closing_day_override():
 
 
 @app.route('/closing-day-overrides', methods=['POST'])
+@require_auth
 def set_closing_day_override():
     """Set (upsert) the closing day override for a specific month/year."""
     data = request.json
@@ -794,6 +992,7 @@ def set_closing_day_override():
 
 
 @app.route('/closing-day-overrides', methods=['DELETE'])
+@require_auth
 def delete_closing_day_override():
     """Delete the closing day override for a specific month/year."""
     try:
@@ -808,6 +1007,58 @@ def delete_closing_day_override():
         return jsonify({"message": "Override deleted successfully"}), 200
     else:
         return jsonify({"message": "No override found for this month/year"}), 404
+
+# ============= AUTH / ONBOARDING =============
+
+@app.route('/auth/onboard', methods=['POST'])
+@require_auth
+def onboard_user():
+    """
+    Called after signup to create profile, family, and seed default data.
+    Expects: { "display_name": "...", "family_name": "..." }
+    """
+    data = request.json
+    display_name = data.get('display_name')
+    family_name = data.get('family_name')
+
+    if not display_name or not family_name:
+        return jsonify({"error": "display_name and family_name are required"}), 400
+
+    client = get_pg()
+
+    # Check if already onboarded
+    existing = client.from_("profiles").select("id").eq("auth_id", g.user_id).execute()
+    if existing.data:
+        return jsonify({"error": "User already onboarded"}), 409
+
+    # 1. Create profile
+    profile = client.from_("profiles").insert({
+        "name": display_name,
+        "email": g.user_email,
+        "auth_id": g.user_id
+    }).execute().data[0]
+
+    # 2. Create family
+    family = client.from_("families").insert({
+        "name": family_name,
+        "owner_id": g.user_id,
+    }).execute().data[0]
+
+    # 3. Create family membership
+    client.from_("family_members").insert({
+        "family_id": family['id'],
+        "user_id": g.user_id,
+        "role": "owner",
+        "display_name": display_name
+    }).execute()
+
+    # 4. Payment methods are global (family_id IS NULL in DB) — no seeding needed per family.
+
+    return jsonify({
+        "profile_id": profile['id'],
+        "family_id": family['id']
+    }), 201
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get("PORT", 5000)))

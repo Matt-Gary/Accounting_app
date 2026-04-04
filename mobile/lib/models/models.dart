@@ -2,18 +2,24 @@ class Category {
   final String key;
   final String label;
   final int sortOrder;
+  final bool isGlobal;
+  final bool isHidden;
 
   Category({
     required this.key,
     required this.label,
     required this.sortOrder,
+    this.isGlobal = true,
+    this.isHidden = false,
   });
 
   factory Category.fromJson(Map<String, dynamic> json) {
     return Category(
       key: json['key'],
       label: json['label'],
-      sortOrder: json['sortOrder'] ?? 0,
+      sortOrder: json['sort_order'] ?? json['sortOrder'] ?? 0,
+      isGlobal: json['is_global'] ?? true,
+      isHidden: json['is_hidden'] ?? false,
     );
   }
 

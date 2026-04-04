@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/backend_service.dart';
-import '../repositories/accounting_repository.dart';
 import 'add_expense_screen.dart';
 import 'add_earning_screen.dart';
 import 'expense_details_screen.dart';
 import 'recurring_expenses_screen.dart';
+import 'category_management_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,7 +18,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _backendService = BackendService();
-  final _repository = AccountingRepository();
 
   DateTime _currentDate = DateTime.now();
   bool _isLoading = false;
@@ -246,7 +246,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (confirmed == true) {
       try {
-        await _repository.deleteExpense(expense['id']);
+        await _backendService.deleteExpense(expense['id']);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Expense deleted successfully')),
@@ -273,6 +273,20 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Colors.white,
         elevation: 0,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.category_outlined, color: Colors.black),
+            tooltip: 'Manage Categories',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const CategoryManagementScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout, color: Colors.black),
+            tooltip: 'Sign out',
+            onPressed: () => Supabase.instance.client.auth.signOut(),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.black),
             onPressed: _loadDashboard,
