@@ -11,11 +11,16 @@ from dateutil.parser import parse
 app = Flask(__name__)
 CORS(app) # Enable CORS for all routes
 
-# Payment Methods Cache (Simplified for demo, locally cached or fetched per request)
-# Ideally, fetch from DB.
-def get_payment_methods():
+# Fetch payment methods scoped to a family: global (family_id IS NULL) + family-specific.
+# Keeping this scoped prevents unrelated families' credit card closing days from
+# accidentally widening the expense query window in fetch_expenses_for_period().
+def get_payment_methods(family_id=None):
     client = get_pg()
-    res = client.from_("payment_methods").select("*").execute()
+    if family_id:
+        res = client.from_("payment_methods").select("*")\
+            .or_(f"family_id.is.null,family_id.eq.{family_id}").execute()
+    else:
+        res = client.from_("payment_methods").select("*").is_("family_id", "null").execute()
     # Return dict mapping id -> method
     return {pm['id']: pm for pm in res.data}
 
@@ -410,7 +415,7 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
     # Widen query window to account for credit cards with lower closing days.
     # Without this, expenses between a PM's closing_day and query_closing_day
     # in the previous month would never be fetched for the next billing period.
-    payment_methods = get_payment_methods()
+    payment_methods = get_payment_methods(family_id=family_id)
     cc_closing_days = [
         pm.get('closing_day') or 23
         for pm in payment_methods.values()
