@@ -168,7 +168,7 @@ def get_family_data():
             .select("category_key").eq("family_id", g.family_id).execute()
         hidden_keys = {r["category_key"] for r in (hidden_res.data or [])}
         visible_cats = [c for c in (cats_res.data or []) if c["key"] not in hidden_keys]
-        methods_res = client.from_("payment_methods").select("id, name, is_credit_card, closing_day").eq("family_id", g.family_id).execute()
+        methods_res = client.from_("payment_methods").select("id, name, is_credit_card, closing_day").or_(f"family_id.is.null,family_id.eq.{g.family_id}").execute()
     else:
         visible_cats = client.from_("categories").select("key, label, sort_order")\
             .is_("family_id", "null").order("label").execute().data or []
@@ -1047,15 +1047,7 @@ def onboard_user():
         "display_name": display_name
     }).execute()
 
-    # 4. Seed default payment methods (categories are global — no seeding needed)
-    default_pms = [
-        {"name": "Cash", "is_credit_card": False, "closing_day": None, "family_id": family['id']},
-        {"name": "Credit Card", "is_credit_card": True, "closing_day": 23, "family_id": family['id']},
-    ]
-    try:
-        client.from_("payment_methods").insert(default_pms).execute()
-    except Exception:
-        pass  # PMs already exist — fine for now
+    # 4. Payment methods are global (family_id IS NULL in DB) — no seeding needed per family.
 
     return jsonify({
         "profile_id": profile['id'],
