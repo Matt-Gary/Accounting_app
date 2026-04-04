@@ -1,15 +1,23 @@
 import yfinance as yf
 from service.database import get_pg
 
-def fetch_portfolio(user_id):
+def fetch_portfolio(user_id, family_id=None):
     client = get_pg()
-    
-    # 1. Fetch investments from DB
-    res = client.from_("investments").select("*").eq("user_id", user_id).execute()
+
+    # 1. Fetch investments from DB — prefer family_id scope, fall back to user_id
+    if family_id:
+        res = client.from_("investments").select("*").eq("family_id", family_id).execute()
+        if not res.data and user_id:
+            print(f"[DEBUG] family_id={family_id} returned no investments, falling back to user_id={user_id}")
+            res = client.from_("investments").select("*").eq("user_id", user_id).execute()
+    else:
+        res = client.from_("investments").select("*").eq("user_id", user_id).execute()
     investments = res.data
-    
+
+    print(f"[DEBUG] fetch_portfolio: family_id={family_id}, user_id={user_id}, found={len(investments) if investments else 0}")
+
     if not investments:
-        return {"total_value": 0.0, "investments": []}
+        return {"total_value_usd": 0.0, "total_value_brl": 0.0, "exchange_rate_usd_brl": 5.0, "investments": []}
 
     # 2. Collect symbols to fetch (Stocks/Crypto) plus Exchange Rates
     symbols = [inv['symbol'] for inv in investments if inv['type'] in ('stock', 'crypto') and inv['symbol']]
@@ -143,7 +151,7 @@ def fetch_portfolio(user_id):
         "investments": enriched_investments
     }
 
-def add_investment(user_id, data):
+def add_investment(user_id, data, family_id=None):
     client = get_pg()
     payload = {
         "user_id": user_id,
@@ -154,6 +162,8 @@ def add_investment(user_id, data):
         "cost_basis": data.get('cost_basis', 0),
         "currency": data.get('currency', 'BRL'),
     }
+    if family_id:
+        payload["family_id"] = family_id
     res = client.from_("investments").insert(payload).execute()
     return res.data
 
@@ -168,30 +178,12 @@ def delete_investment(inv_id, user_id):
     res = client.from_("investments").delete().eq("id", inv_id).eq("user_id", user_id).execute()
     return res.data
 
-def get_portfolio_distribution_by_type(user_id, investment_types=None):
+def get_portfolio_distribution_by_type(user_id, investment_types=None, family_id=None):
     """
     Get portfolio distribution aggregated by investment type for pie chart.
-    
-    Args:
-        user_id: User ID to fetch investments for
-        investment_types: Optional list of investment types to filter (e.g., ['stock', 'crypto'])
-                         If None, includes all types
-    
-    Returns:
-        {
-            "distribution": [
-                {"type": "stock", "value_usd": 1000.0, "value_brl": 5000.0, "percentage": 50.0},
-                {"type": "crypto", "value_usd": 500.0, "value_brl": 2500.0, "percentage": 25.0},
-                ...
-            ],
-            "total_value_usd": 2000.0,
-            "total_value_brl": 10000.0,
-            "exchange_rate_usd_brl": 5.0,
-            "items": [...] # Only included when filtering by single type
-        }
     """
     # Fetch the full portfolio
-    portfolio = fetch_portfolio(user_id)
+    portfolio = fetch_portfolio(user_id, family_id=family_id)
     
     if not portfolio['investments']:
         return {

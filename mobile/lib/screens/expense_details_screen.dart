@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../repositories/accounting_repository.dart';
+import '../services/backend_service.dart';
 
 class ExpenseDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> expense;
@@ -12,7 +12,7 @@ class ExpenseDetailsScreen extends StatefulWidget {
 }
 
 class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
-  final _repository = AccountingRepository();
+  final _backendService = BackendService();
 
   Future<void> _deleteExpense() async {
     // Block deletion of recurring-linked expenses
@@ -56,7 +56,7 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
 
     if (confirmed == true && mounted) {
       try {
-        await _repository.deleteExpense(widget.expense['id']);
+        await _backendService.deleteExpense(widget.expense['id']);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Expense deleted successfully')),

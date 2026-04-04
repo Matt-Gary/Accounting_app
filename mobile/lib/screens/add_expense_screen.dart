@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
-import '../repositories/accounting_repository.dart';
+import '../services/backend_service.dart';
 
 class AddExpenseScreen extends StatefulWidget {
   const AddExpenseScreen({super.key});
@@ -12,7 +12,7 @@ class AddExpenseScreen extends StatefulWidget {
 
 class _AddExpenseScreenState extends State<AddExpenseScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _repository = AccountingRepository();
+  final _backendService = BackendService();
 
   // Form State
   UserProfile? _selectedUser;
@@ -37,17 +37,12 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
 
   Future<void> _loadData() async {
     try {
-      final users = await _repository.getProfiles();
-      final categories = await _repository.getCategories();
-      final methods = await _repository.getPaymentMethods();
-
+      final familyData = await _backendService.getFamilyData();
       if (mounted) {
         setState(() {
-          _users = users;
-          _categories = categories;
-          _paymentMethods = methods;
-
-          // Defaults if available
+          _users = familyData.profiles;
+          _categories = familyData.categories;
+          _paymentMethods = familyData.paymentMethods;
           if (_users.isNotEmpty) _selectedUser = _users.first;
           if (_paymentMethods.isNotEmpty)
             _selectedPaymentMethod = _paymentMethods.first;
@@ -126,7 +121,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
           ));
         }
 
-        await _repository.addExpenses(expenses);
+        await _backendService.addExpenses(expenses.map((e) => e.toJson()).toList());
       } else {
         final expense = Expense(
           userId: _selectedUser!.id,
@@ -138,7 +133,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
           installments: installments,
         );
 
-        await _repository.addExpense(expense);
+        await _backendService.addExpense(expense.toJson());
       }
 
       if (mounted) {

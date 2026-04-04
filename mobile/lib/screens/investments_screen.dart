@@ -2,13 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
-import '../repositories/accounting_repository.dart';
 import 'add_investment_screen.dart';
 
 class InvestmentsScreen extends StatefulWidget {
-  final UserProfile? currentUser;
-  const InvestmentsScreen({Key? key, required this.currentUser})
-      : super(key: key);
+  const InvestmentsScreen({super.key});
 
   @override
   State<InvestmentsScreen> createState() => _InvestmentsScreenState();
@@ -16,38 +13,38 @@ class InvestmentsScreen extends StatefulWidget {
 
 class _InvestmentsScreenState extends State<InvestmentsScreen> {
   final _backendService = BackendService();
-  final _repository = AccountingRepository();
   bool _isLoading = false;
   PortfolioData? _portfolio;
   PortfolioDistribution? _distribution;
   String _errorMessage = '';
+  UserProfile? _currentUser;
 
   @override
   void initState() {
     super.initState();
-    if (widget.currentUser != null) {
-      _loadData();
-    }
+    _loadUser();
   }
 
-  @override
-  void didUpdateWidget(covariant InvestmentsScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.currentUser != widget.currentUser) {
-      _loadData(); // Reload if user changes (though usually handled by parent rebuild)
+  Future<void> _loadUser() async {
+    try {
+      final familyData = await _backendService.getFamilyData();
+      if (familyData.profiles.isNotEmpty) {
+        _currentUser = familyData.profiles.first;
+        _loadData();
+      }
+    } catch (e) {
+      print("Error loading user profile: $e");
     }
   }
 
   Future<void> _loadData() async {
-    if (widget.currentUser == null) return;
-
     setState(() {
       _isLoading = true;
       _errorMessage = '';
     });
 
     try {
-      final data = await _backendService.getInvestments(widget.currentUser!.id);
+      final data = await _backendService.getInvestments();
       setState(() => _portfolio = data);
       _loadDistribution();
     } catch (e) {
@@ -58,8 +55,6 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
   }
 
   Future<void> _loadDistribution() async {
-    if (widget.currentUser == null) return;
-
     try {
       // Only apply chart type filter if not 'All'
       List<String>? typesFilter;
@@ -68,7 +63,6 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
       }
 
       final dist = await _backendService.getPortfolioDistribution(
-        widget.currentUser!.id,
         investmentTypes: typesFilter,
       );
       setState(() => _distribution = dist);
@@ -79,7 +73,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
 
   Future<void> _delete(String id) async {
     try {
-      await _repository.deleteInvestment(id);
+      await _backendService.deleteInvestmentById(id);
       _loadData();
     } catch (e) {
       ScaffoldMessenger.of(context)
@@ -122,7 +116,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
               context,
               MaterialPageRoute(
                 builder: (_) => AddInvestmentScreen(
-                    currentUser: widget.currentUser, investmentToEdit: inv),
+                    currentUser: _currentUser, investmentToEdit: inv),
               ));
           _loadData();
         },
@@ -216,9 +210,8 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.currentUser == null) {
-      return const Center(
-          child: Text("Please select a user in the Dashboard first."));
+    if (_currentUser == null || _isLoading) {
+      return const Center(child: CircularProgressIndicator());
     }
 
     // Filter Logic
@@ -252,7 +245,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                   context,
                   MaterialPageRoute(
                       builder: (_) =>
-                          AddInvestmentScreen(currentUser: widget.currentUser)),
+                          AddInvestmentScreen(currentUser: _currentUser)),
                 );
                 _loadData();
               }),

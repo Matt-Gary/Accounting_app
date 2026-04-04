@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
-import '../repositories/accounting_repository.dart';
 import '../services/backend_service.dart';
 
 class RecurringExpensesScreen extends StatefulWidget {
@@ -12,7 +11,6 @@ class RecurringExpensesScreen extends StatefulWidget {
 }
 
 class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
-  final _repository = AccountingRepository();
   final _backendService = BackendService();
   bool _isLoading = false;
   List<RecurringExpense> _recurringExpenses = [];
@@ -29,16 +27,18 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     try {
-      final recurring = await _repository.getRecurringExpenses();
-      final users = await _repository.getProfiles();
-      final cats = await _repository.getCategories();
-      final methods = await _repository.getPaymentMethods();
+      final results = await Future.wait([
+        _backendService.getRecurringExpenses(),
+        _backendService.getFamilyData(),
+      ]);
+      final rawRecurring = results[0] as List<Map<String, dynamic>>;
+      final familyData = results[1] as FamilyData;
 
       setState(() {
-        _recurringExpenses = recurring;
-        _users = users;
-        _categories = cats;
-        _paymentMethods = methods;
+        _recurringExpenses = rawRecurring.map((e) => RecurringExpense.fromJson(e)).toList();
+        _users = familyData.profiles;
+        _categories = familyData.categories;
+        _paymentMethods = familyData.paymentMethods;
       });
     } catch (e) {
       if (mounted) {
@@ -199,7 +199,6 @@ class _RecurringFormState extends State<RecurringForm> {
   final _amountController = TextEditingController();
   final _descController = TextEditingController();
   final _dayController = TextEditingController();
-  final _repository = AccountingRepository();
   final _backendService = BackendService();
 
   late UserProfile _selectedUser;
@@ -257,7 +256,7 @@ class _RecurringFormState extends State<RecurringForm> {
       );
 
       if (widget.expense == null) {
-        await _repository.addRecurringExpense(expense);
+        await _backendService.addRecurringExpense(expense.toJson());
       } else {
         await _backendService.updateRecurringExpense(
           widget.expense!.id!,

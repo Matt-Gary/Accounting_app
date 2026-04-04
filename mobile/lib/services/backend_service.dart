@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/models.dart';
 
@@ -7,6 +9,14 @@ class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
   static const String baseUrl = 'http://127.0.0.1:5000';
   //static const String baseUrl = 'http://72.60.137.97:5005';
+
+  Map<String, String> _authHeaders({bool json = false}) {
+    final session = Supabase.instance.client.auth.currentSession;
+    return {
+      if (json) 'Content-Type': 'application/json',
+      if (session != null) 'Authorization': 'Bearer ${session.accessToken}',
+    };
+  }
 
   Future<DashboardData> getDashboard(
       {required int month,
@@ -23,10 +33,9 @@ class BackendService {
     final uri =
         Uri.parse('$baseUrl/dashboard').replace(queryParameters: queryParams);
 
-    final response = await http.get(uri);
+    final response = await http.get(uri, headers: _authHeaders());
 
     if (response.statusCode == 200) {
-      print("Raw JSON: ${response.body}"); // Debugging
       return DashboardData.fromJson(jsonDecode(response.body));
     } else {
       throw Exception('Failed to load dashboard: ${response.body}');
@@ -34,17 +43,27 @@ class BackendService {
   }
 
   Future<void> downloadReport(int month, int year) async {
-    final url = '$baseUrl/report/monthly?month=$month&year=$year';
-    final uri = Uri.parse(url);
+    final uri = Uri.parse('$baseUrl/report/monthly').replace(queryParameters: {
+      'month': month.toString(),
+      'year': year.toString(),
+    });
 
     try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      final response = await http.get(uri, headers: _authHeaders());
+      if (response.statusCode == 200) {
+        final tempDir = Directory.systemTemp;
+        final filePath = '${tempDir.path}/report_${month}_$year.xlsx';
+        final file = File(filePath);
+        await file.writeAsBytes(response.bodyBytes);
+        final fileUri = Uri.file(file.path);
+        if (await canLaunchUrl(fileUri)) {
+          await launchUrl(fileUri, mode: LaunchMode.externalApplication);
+        }
       } else {
-        throw Exception('Could not launch $url');
+        throw Exception('Failed to download report: ${response.statusCode}');
       }
     } catch (e) {
-      print("Error launching download URL: $e");
+      print("Error downloading report: $e");
       rethrow;
     }
   }
@@ -53,7 +72,7 @@ class BackendService {
     final uri = Uri.parse('$baseUrl/earnings');
     final response = await http.post(
       uri,
-      headers: {'Content-Type': 'application/json'},
+      headers: _authHeaders(json: true),
       body: jsonEncode(earning.toJson()),
     );
 
@@ -64,9 +83,9 @@ class BackendService {
     }
   }
 
-  Future<PortfolioData> getInvestments(String userId) async {
-    final uri = Uri.parse('$baseUrl/investments?user_id=$userId');
-    final response = await http.get(uri);
+  Future<PortfolioData> getInvestments() async {
+    final uri = Uri.parse('$baseUrl/investments');
+    final response = await http.get(uri, headers: _authHeaders());
 
     if (response.statusCode == 200) {
       return PortfolioData.fromJson(jsonDecode(response.body));
@@ -75,17 +94,57 @@ class BackendService {
     }
   }
 
-  Future<PortfolioDistribution> getPortfolioDistribution(String userId,
+  Future<void> addInvestment(Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/investments');
+    final response = await http.post(
+      uri,
+      headers: _authHeaders(json: true),
+      body: jsonEncode(data),
+    );
+    if (response.statusCode != 201) {
+      throw Exception('Failed to add investment: ${response.body}');
+    }
+  }
+
+  Future<void> updateInvestmentById(
+      String id, Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/investments/$id');
+    final response = await http.put(
+      uri,
+      headers: _authHeaders(json: true),
+      body: jsonEncode(data),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update investment: ${response.body}');
+    }
+  }
+
+  Future<void> deleteInvestmentById(String id) async {
+    final uri = Uri.parse('$baseUrl/investments/$id');
+    final response = await http.delete(uri, headers: _authHeaders());
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete investment: ${response.body}');
+    }
+  }
+
+  Future<void> deleteExpense(String id) async {
+    final uri = Uri.parse('$baseUrl/expenses/$id');
+    final response = await http.delete(uri, headers: _authHeaders());
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete expense: ${response.body}');
+    }
+  }
+
+  Future<PortfolioDistribution> getPortfolioDistribution(
       {List<String>? investmentTypes}) async {
     final queryParams = {
-      'user_id': userId,
       if (investmentTypes != null && investmentTypes.isNotEmpty)
         'investment_types': investmentTypes.join(','),
     };
 
     final uri = Uri.parse('$baseUrl/investments/distribution')
         .replace(queryParameters: queryParams);
-    final response = await http.get(uri);
+    final response = await http.get(uri, headers: _authHeaders());
 
     if (response.statusCode == 200) {
       return PortfolioDistribution.fromJson(jsonDecode(response.body));
@@ -103,7 +162,7 @@ class BackendService {
       'year': year.toString(),
     });
 
-    final response = await http.get(uri);
+    final response = await http.get(uri, headers: _authHeaders());
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
@@ -119,7 +178,7 @@ class BackendService {
 
     final response = await http.post(
       uri,
-      headers: {'Content-Type': 'application/json'},
+      headers: _authHeaders(json: true),
       body: jsonEncode({
         'month': month,
         'year': year,
@@ -134,7 +193,7 @@ class BackendService {
 
   Future<void> deleteRecurringExpense(String id) async {
     final uri = Uri.parse('$baseUrl/recurring-expenses/$id');
-    final response = await http.delete(uri);
+    final response = await http.delete(uri, headers: _authHeaders());
 
     if (response.statusCode != 200) {
       throw Exception('Failed to delete recurring expense: ${response.body}');
@@ -146,7 +205,7 @@ class BackendService {
     final uri = Uri.parse('$baseUrl/recurring-expenses/$id');
     final response = await http.put(
       uri,
-      headers: {'Content-Type': 'application/json'},
+      headers: _authHeaders(json: true),
       body: jsonEncode(data),
     );
 
@@ -162,11 +221,101 @@ class BackendService {
       'year': year.toString(),
     });
 
-    final response = await http.delete(uri);
+    final response = await http.delete(uri, headers: _authHeaders());
 
     if (response.statusCode != 200 && response.statusCode != 404) {
       throw Exception(
           'Failed to delete closing day override: ${response.body}');
+    }
+  }
+
+  // ============= RECURRING EXPENSES =============
+
+  Future<List<Map<String, dynamic>>> getRecurringExpenses() async {
+    final uri = Uri.parse('$baseUrl/recurring-expenses');
+    final response = await http.get(uri, headers: _authHeaders());
+
+    if (response.statusCode == 200) {
+      return List<Map<String, dynamic>>.from(jsonDecode(response.body));
+    } else {
+      throw Exception('Failed to load recurring expenses: ${response.body}');
+    }
+  }
+
+  Future<Map<String, dynamic>> addRecurringExpense(
+      Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/recurring-expenses');
+    final response = await http.post(
+      uri,
+      headers: _authHeaders(json: true),
+      body: jsonEncode(data),
+    );
+
+    if (response.statusCode == 201) {
+      return Map<String, dynamic>.from(jsonDecode(response.body));
+    } else {
+      throw Exception('Failed to add recurring expense: ${response.body}');
+    }
+  }
+
+  // ============= AUTH / ONBOARDING =============
+
+  Future<FamilyData> getFamilyData() async {
+    final uri = Uri.parse('$baseUrl/family/data');
+    final response = await http.get(uri, headers: _authHeaders());
+    if (response.statusCode == 200) {
+      return FamilyData.fromJson(jsonDecode(response.body));
+    } else {
+      throw Exception('Failed to load family data: ${response.body}');
+    }
+  }
+
+  Future<void> addExpense(Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/expenses');
+    final response = await http.post(
+      uri,
+      headers: _authHeaders(json: true),
+      body: jsonEncode(data),
+    );
+    if (response.statusCode != 201) {
+      throw Exception('Failed to add expense: ${response.body}');
+    }
+  }
+
+  Future<void> addExpenses(List<Map<String, dynamic>> data) async {
+    final uri = Uri.parse('$baseUrl/expenses/bulk');
+    final response = await http.post(
+      uri,
+      headers: _authHeaders(json: true),
+      body: jsonEncode(data),
+    );
+    if (response.statusCode != 201) {
+      throw Exception('Failed to add expenses: ${response.body}');
+    }
+  }
+
+  Future<void> onboardUser({
+    required String displayName,
+    required String familyName,
+    String? accessToken,
+  }) async {
+    final uri = Uri.parse('$baseUrl/auth/onboard');
+    // Use provided token (from signUp response) or fall back to current session
+    final token = accessToken ?? Supabase.instance.client.auth.currentSession?.accessToken;
+    final response = await http.post(
+      uri,
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode({
+        'display_name': displayName,
+        'family_name': familyName,
+      }),
+    );
+
+    if (response.statusCode != 201) {
+      throw Exception('Failed to onboard user: ${response.body}');
     }
   }
 }
@@ -340,6 +489,35 @@ class InvestmentTypeDistribution {
       valueUsd: (json['value_usd'] as num? ?? 0.0).toDouble(),
       valueBrl: (json['value_brl'] as num? ?? 0.0).toDouble(),
       percentage: (json['percentage'] as num? ?? 0.0).toDouble(),
+    );
+  }
+}
+
+class FamilyData {
+  final List<UserProfile> profiles;
+  final List<Category> categories;
+  final List<PaymentMethod> paymentMethods;
+
+  FamilyData({
+    required this.profiles,
+    required this.categories,
+    required this.paymentMethods,
+  });
+
+  factory FamilyData.fromJson(Map<String, dynamic> json) {
+    return FamilyData(
+      profiles: (json['profiles'] as List<dynamic>?)
+              ?.map((e) => UserProfile.fromJson(e))
+              .toList() ??
+          [],
+      categories: (json['categories'] as List<dynamic>?)
+              ?.map((e) => Category.fromJson(e))
+              .toList() ??
+          [],
+      paymentMethods: (json['payment_methods'] as List<dynamic>?)
+              ?.map((e) => PaymentMethod.fromJson(e))
+              .toList() ??
+          [],
     );
   }
 }

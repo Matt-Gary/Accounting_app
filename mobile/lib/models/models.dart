@@ -13,7 +13,7 @@ class Category {
     return Category(
       key: json['key'],
       label: json['label'],
-      sortOrder: json['sortOrder'] ?? 0,
+      sortOrder: json['sort_order'] ?? json['sortOrder'] ?? 0,
     );
   }
 

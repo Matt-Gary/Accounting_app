@@ -1,15 +1,10 @@
 from service.database import get_pg
 from dateutil.parser import parse
 
-def fetch_earnings_for_period(month, year, user_id=None):
+def fetch_earnings_for_period(month, year, user_id=None, family_id=None):
     client = get_pg()
-    
-    # Calculate start and end of the month
-    # Note: Earnings strictly follow calendar month for simplicity usually, 
-    # unless user wants specific billing cycle. Assuming calendar month for now.
+
     start_date = f"{year}-{month:02d}-01"
-    # End date: simple hack, just go to next month/year logic or let's use billing service logic if needed.
-    # But for income, usually it's just received date.
     if month == 12:
         end_date = f"{year + 1}-01-01"
     else:
@@ -19,8 +14,10 @@ def fetch_earnings_for_period(month, year, user_id=None):
         .select("*, profiles(name)")\
         .gte("earned_at", start_date)\
         .lt("earned_at", end_date)
-        
-    if user_id:
+
+    if family_id:
+        query = query.eq("family_id", family_id)
+    elif user_id:
         query = query.eq("user_id", user_id)
         
     res = query.execute()
