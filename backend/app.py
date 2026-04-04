@@ -159,17 +159,131 @@ def get_family_data():
         profiles = profile_res.data
 
     if g.family_id:
-        cats_res = client.from_("categories").select("key, label, sort_order").eq("family_id", g.family_id).order("sort_order").execute()
+        # Global categories (family_id IS NULL) + this family's custom categories
+        cats_res = client.from_("categories")\
+            .select("key, label, sort_order, family_id")\
+            .or_(f"family_id.is.null,family_id.eq.{g.family_id}")\
+            .order("label").execute()
+        hidden_res = client.from_("family_category_hidden")\
+            .select("category_key").eq("family_id", g.family_id).execute()
+        hidden_keys = {r["category_key"] for r in (hidden_res.data or [])}
+        visible_cats = [c for c in (cats_res.data or []) if c["key"] not in hidden_keys]
         methods_res = client.from_("payment_methods").select("id, name, is_credit_card, closing_day").eq("family_id", g.family_id).execute()
     else:
-        cats_res = client.from_("categories").select("key, label, sort_order").order("sort_order").execute()
+        visible_cats = client.from_("categories").select("key, label, sort_order")\
+            .is_("family_id", "null").order("label").execute().data or []
         methods_res = client.from_("payment_methods").select("id, name, is_credit_card, closing_day").execute()
 
     return jsonify({
         "profiles": profiles,
-        "categories": cats_res.data,
+        "categories": visible_cats,
         "payment_methods": methods_res.data
     })
+
+# CATEGORY MANAGEMENT ENDPOINTS
+
+@app.route('/categories', methods=['GET'])
+@require_auth
+def list_categories():
+    """Full category list for the management UI — includes is_global and is_hidden flags."""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    client = get_pg()
+    cats = client.from_("categories")\
+        .select("key, label, sort_order, family_id")\
+        .or_(f"family_id.is.null,family_id.eq.{g.family_id}")\
+        .order("label").execute().data or []
+    hidden_res = client.from_("family_category_hidden")\
+        .select("category_key").eq("family_id", g.family_id).execute()
+    hidden_keys = {r["category_key"] for r in (hidden_res.data or [])}
+    result = [
+        {
+            "key": c["key"],
+            "label": c["label"],
+            "sort_order": c["sort_order"],
+            "is_global": c["family_id"] is None,
+            "is_hidden": c["key"] in hidden_keys,
+        }
+        for c in cats
+    ]
+    return jsonify(result), 200
+
+@app.route('/categories', methods=['POST'])
+@require_auth
+def create_category():
+    """Creates a custom category scoped to this family."""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    data = request.json or {}
+    label = (data.get('label') or '').strip()
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+    import uuid as _uuid
+    family_prefix = g.family_id.replace('-', '')[:8]
+    custom_key = f"custom_{family_prefix}_{_uuid.uuid4().hex[:12]}"
+    client = get_pg()
+    existing = client.from_("categories")\
+        .select("sort_order")\
+        .or_(f"family_id.is.null,family_id.eq.{g.family_id}")\
+        .order("sort_order", desc=True).limit(1).execute().data
+    next_order = (existing[0]["sort_order"] + 1) if existing else 100
+    try:
+        res = client.from_("categories").insert({
+            "key": custom_key,
+            "label": label,
+            "sort_order": next_order,
+            "family_id": g.family_id,
+        }).execute()
+        return jsonify(res.data[0]), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/categories/<category_key>', methods=['DELETE'])
+@require_auth
+def delete_category(category_key):
+    """Deletes a custom (family-scoped) category. Refuses to delete global ones."""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    client = get_pg()
+    cat_res = client.from_("categories").select("key, family_id")\
+        .eq("key", category_key).limit(1).execute()
+    if not cat_res.data:
+        return jsonify({"error": "Category not found"}), 404
+    cat = cat_res.data[0]
+    if cat["family_id"] != g.family_id:
+        return jsonify({"error": "Cannot delete a global category"}), 403
+    in_use = client.from_("expenses").select("id", count="exact")\
+        .eq("category_key", category_key).limit(1).execute()
+    if in_use.data and len(in_use.data) > 0:
+        return jsonify({"error": "Category is in use by existing expenses"}), 409
+    client.from_("categories").delete().eq("key", category_key).execute()
+    return jsonify({"message": "Deleted"}), 200
+
+@app.route('/categories/<category_key>/visibility', methods=['PUT'])
+@require_auth
+def set_category_visibility(category_key):
+    """Toggle a global category's visibility for this family. Body: { hidden: bool }"""
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+    data = request.json or {}
+    if 'hidden' not in data:
+        return jsonify({"error": "hidden (bool) is required"}), 400
+    client = get_pg()
+    cat_res = client.from_("categories").select("key, family_id")\
+        .eq("key", category_key).limit(1).execute()
+    if not cat_res.data:
+        return jsonify({"error": "Category not found"}), 404
+    if cat_res.data[0]["family_id"] is not None:
+        return jsonify({"error": "Visibility toggle only applies to global categories"}), 400
+    if data['hidden']:
+        client.from_("family_category_hidden").upsert(
+            {"family_id": g.family_id, "category_key": category_key},
+            on_conflict="family_id,category_key"
+        ).execute()
+    else:
+        client.from_("family_category_hidden").delete()\
+            .eq("family_id", g.family_id).eq("category_key", category_key).execute()
+    return jsonify({"category_key": category_key, "hidden": data['hidden']}), 200
 
 # EXPENSES ENDPOINTS
 @app.route('/expenses', methods=['POST'])
@@ -476,7 +590,7 @@ def delete_expense(expense_id):
     try:
         client = get_pg()
         # Verify ownership before deletion
-        res = client.from_("expenses").delete().eq("id", expense_id).eq("user_id", g.profile_id).execute()
+        client.from_("expenses").delete().eq("id", expense_id).eq("user_id", g.profile_id).execute()
         return jsonify({"message": "Expense deleted successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -933,21 +1047,7 @@ def onboard_user():
         "display_name": display_name
     }).execute()
 
-    # 4. Seed default categories (upsert — categories table uses 'key' as PK, may already exist)
-    default_categories = [
-        {"key": "food", "label": "Food", "sort_order": 1, "family_id": family['id']},
-        {"key": "transport", "label": "Transport", "sort_order": 2, "family_id": family['id']},
-        {"key": "housing", "label": "Housing", "sort_order": 3, "family_id": family['id']},
-        {"key": "health", "label": "Health", "sort_order": 4, "family_id": family['id']},
-        {"key": "entertainment", "label": "Entertainment", "sort_order": 5, "family_id": family['id']},
-        {"key": "other", "label": "Other", "sort_order": 6, "family_id": family['id']},
-    ]
-    try:
-        client.from_("categories").upsert(default_categories, on_conflict="key").execute()
-    except Exception:
-        pass  # Categories already exist globally — that's fine
-
-    # 5. Seed default payment methods
+    # 4. Seed default payment methods (categories are global — no seeding needed)
     default_pms = [
         {"name": "Cash", "is_credit_card": False, "closing_day": None, "family_id": family['id']},
         {"name": "Credit Card", "is_credit_card": True, "closing_day": 23, "family_id": family['id']},

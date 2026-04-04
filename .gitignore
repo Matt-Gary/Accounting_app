@@ -8,3 +8,5 @@ setup_db.sql
 venv
 .env
 __pycache__
+.claude/settings.json
+.claude/skills.json

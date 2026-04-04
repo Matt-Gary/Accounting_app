@@ -7,6 +7,7 @@ import 'add_expense_screen.dart';
 import 'add_earning_screen.dart';
 import 'expense_details_screen.dart';
 import 'recurring_expenses_screen.dart';
+import 'category_management_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -272,6 +273,15 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Colors.white,
         elevation: 0,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.category_outlined, color: Colors.black),
+            tooltip: 'Manage Categories',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const CategoryManagementScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.black),
             tooltip: 'Sign out',

@@ -260,6 +260,50 @@ class BackendService {
 
   // ============= AUTH / ONBOARDING =============
 
+  Future<List<Category>> getCategoriesForManagement() async {
+    final uri = Uri.parse('$baseUrl/categories');
+    final response = await http.get(uri, headers: _authHeaders());
+    if (response.statusCode == 200) {
+      final List<dynamic> data = jsonDecode(response.body);
+      return data.map((e) => Category.fromJson(e)).toList();
+    }
+    throw Exception('Failed to load categories: ${response.body}');
+  }
+
+  Future<Category> createCustomCategory(String label) async {
+    final uri = Uri.parse('$baseUrl/categories');
+    final response = await http.post(
+      uri,
+      headers: _authHeaders(json: true),
+      body: jsonEncode({'label': label}),
+    );
+    if (response.statusCode == 201) {
+      return Category.fromJson(jsonDecode(response.body));
+    }
+    throw Exception('Failed to create category: ${response.body}');
+  }
+
+  Future<void> deleteCustomCategory(String key) async {
+    final uri = Uri.parse('$baseUrl/categories/$key');
+    final response = await http.delete(uri, headers: _authHeaders());
+    if (response.statusCode != 200) {
+      final body = jsonDecode(response.body);
+      throw Exception(body['error'] ?? 'Failed to delete category');
+    }
+  }
+
+  Future<void> setCategoryVisibility(String key, {required bool hidden}) async {
+    final uri = Uri.parse('$baseUrl/categories/$key/visibility');
+    final response = await http.put(
+      uri,
+      headers: _authHeaders(json: true),
+      body: jsonEncode({'hidden': hidden}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update category visibility: ${response.body}');
+    }
+  }
+
   Future<FamilyData> getFamilyData() async {
     final uri = Uri.parse('$baseUrl/family/data');
     final response = await http.get(uri, headers: _authHeaders());
