@@ -345,7 +345,8 @@ class BackendService {
   }) async {
     final uri = Uri.parse('$baseUrl/auth/onboard');
     // Use provided token (from signUp response) or fall back to current session
-    final token = accessToken ?? Supabase.instance.client.auth.currentSession?.accessToken;
+    final token = accessToken ??
+        Supabase.instance.client.auth.currentSession?.accessToken;
     final response = await http.post(
       uri,
       headers: {

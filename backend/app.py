@@ -594,8 +594,19 @@ def create_earning():
 def delete_expense(expense_id):
     try:
         client = get_pg()
-        # Verify ownership before deletion
-        client.from_("expenses").delete().eq("id", expense_id).eq("user_id", g.profile_id).execute()
+        query = client.from_("expenses").delete().eq("id", expense_id)
+
+        # Scope to family (any member can delete) or fall back to own user
+        if g.family_id:
+            query = query.eq("family_id", g.family_id)
+        else:
+            query = query.eq("user_id", g.profile_id)
+
+        res = query.execute()
+
+        if not res.data:
+            return jsonify({"error": "Expense not found or not authorised"}), 404
+
         return jsonify({"message": "Expense deleted successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
