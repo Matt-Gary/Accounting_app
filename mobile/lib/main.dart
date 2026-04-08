@@ -10,6 +10,10 @@ Future<void> main() async {
     url: 'https://aclfelfqqbtuvowintvg.supabase.co',
     anonKey:
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjbGZlbGZxcWJ0dXZvd2ludHZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg1ODU5MDYsImV4cCI6MjA4NDE2MTkwNn0.357lZVIXZLTah4NnFqr9Qj80p9-yEoi5IxhylaRmERg',
+    authOptions: const FlutterAuthClientOptions(
+      authFlowType: AuthFlowType.pkce,
+      autoRefreshToken: true,
+    ),
   );
 
   runApp(const MyApp());
@@ -36,21 +40,38 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  late final Stream<AuthState> _authStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _authStream = Supabase.instance.client.auth.onAuthStateChange;
+  }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<AuthState>(
-      stream: Supabase.instance.client.auth.onAuthStateChange,
+      stream: _authStream,
       builder: (context, snapshot) {
-        // Wait for the first auth event (which restores the persisted session)
-        if (!snapshot.hasData) {
+        // Use currentSession as immediate fallback before the stream emits
+        final session = snapshot.data?.session ??
+            Supabase.instance.client.auth.currentSession;
+
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            session == null) {
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        final session = snapshot.data!.session;
+
         if (session != null) {
           return const MainScreen();
         }

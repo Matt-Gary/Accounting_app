@@ -47,3 +47,5 @@ app.*.map.json
 # Claude related
 .claude
 settings.json
+
+SaaSproject
