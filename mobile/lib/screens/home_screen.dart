@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:open_file/open_file.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../services/backend_service.dart';
 import 'add_expense_screen.dart';
 import 'add_earning_screen.dart';
@@ -97,6 +98,25 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       if (confirmed != true || !mounted) return;
 
+      // Check install-unknown-apps permission (Android 8+) before downloading.
+      // .request() opens the Settings screen and returns immediately — it does NOT
+      // wait for the user to grant. So if not granted, open settings and bail out;
+      // the user taps the button again after enabling the toggle.
+      final installPermission = await Permission.requestInstallPackages.status;
+      if (!installPermission.isGranted) {
+        await openAppSettings(); // opens Install Unknown Apps settings page
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Enable "Install unknown apps" for this app, then tap Update again.'),
+              duration: Duration(seconds: 6),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (!mounted) return;
       final progressNotifier = ValueNotifier<double>(0.0);
       showDialog(
         context: context,
@@ -865,6 +885,72 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }).toList(),
             ),
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            ...entries.asMap().entries.map((e) {
+              final color = _personColors[e.key % _personColors.length];
+              final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text(
+                          e.value.key[0].toUpperCase(),
+                          style: TextStyle(
+                            color: color,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            e.value.key,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 2),
+                          LinearProgressIndicator(
+                            value: total > 0 ? e.value.value / total : 0,
+                            backgroundColor: Colors.grey[200],
+                            color: color,
+                            minHeight: 4,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          'R\$ ${e.value.value.toStringAsFixed(2)}',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '${pct.toStringAsFixed(1)}%',
+                          style: const TextStyle(fontSize: 11, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }),
           ],
         ],
       ),
