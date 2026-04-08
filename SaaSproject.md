@@ -182,64 +182,6 @@ new_exp["family_id"] = g.family_id
 
 ---
 
-# PHASE 3: Per-Family Configuration
-
-## 3.1 Configurable settings (stored in `families` table)
-
-| Setting | Column | Default | Purpose |
-|---------|--------|---------|---------|
-| Currency | `default_currency` | 'BRL' | Primary currency for expenses/earnings |
-| Currency symbol | `currency_symbol` | 'R$' | Displayed in UI |
-| Default closing day | `default_closing_day` | 23 | Credit card billing cutoff |
-| Supported currencies | `supported_currencies` | ['BRL','USD','EUR','PLN'] | For investments |
-
-```sql
-ALTER TABLE families ADD COLUMN supported_currencies TEXT[] DEFAULT ARRAY['BRL','USD','EUR','PLN'];
-```
-
-## 3.2 Per-family categories and payment methods
-
-Categories and payment methods become family-scoped. On family creation, seed with defaults:
-
-```python
-# backend/service/onboarding_service.py
-def create_family(owner_id, family_name, currency='BRL', currency_symbol='R$'):
-    """Called during signup — creates family + default data."""
-    # 1. Create family
-    family = insert_family(name=family_name, owner_id=owner_id,
-                           default_currency=currency, currency_symbol=currency_symbol)
-    # 2. Create owner membership
-    insert_family_member(family_id=family['id'], user_id=owner_id,
-                         role='owner', display_name=...)
-    # 3. Seed default categories
-    default_categories = [
-        {'key': 'food', 'label': 'Food', 'sort_order': 1},
-        {'key': 'transport', 'label': 'Transport', 'sort_order': 2},
-        {'key': 'housing', 'label': 'Housing', 'sort_order': 3},
-        {'key': 'health', 'label': 'Health', 'sort_order': 4},
-        {'key': 'entertainment', 'label': 'Entertainment', 'sort_order': 5},
-        {'key': 'other', 'label': 'Other', 'sort_order': 6},
-    ]
-    for cat in default_categories:
-        cat['family_id'] = family['id']
-        insert_category(cat)
-    # 4. Seed default payment methods
-    default_pms = [
-        {'name': 'Cash', 'is_credit_card': False, 'closing_day': None},
-        {'name': 'Credit Card', 'is_credit_card': True, 'closing_day': 23},
-    ]
-    for pm in default_pms:
-        pm['family_id'] = family['id']
-        insert_payment_method(pm)
-    return family
-```
-
-## 3.3 Flutter changes for configuration
-
-- Replace all hardcoded `'R$'` with family's `currency_symbol` from settings
-- Replace default closing day `23` display with family's `default_closing_day`
-- Load family settings on app startup, store in a provider/state
-
 ### New endpoints needed
 ```
 GET    /family/settings          — Get current family config
@@ -254,21 +196,6 @@ POST   /family/payment-methods   — Add payment method
 PUT    /family/payment-methods/<id> — Edit payment method
 DELETE /family/payment-methods/<id> — Delete payment method
 ```
-
-### Files to modify
-- `mobile/lib/screens/home_screen.dart` — Replace `'R$'` with dynamic symbol
-- `mobile/lib/screens/add_expense_screen.dart` — Replace `'R$ '` prefix
-- `mobile/lib/screens/add_earning_screen.dart` — Replace `'R$ '` prefix
-- `mobile/lib/screens/expense_details_screen.dart` — Replace `'R$'`
-- `mobile/lib/screens/investments_screen.dart` — Replace currency references
-- `mobile/lib/services/backend_service.dart` — Add family settings endpoint calls
-- **New**: `mobile/lib/screens/family_settings_screen.dart`
-- **New**: `mobile/lib/screens/manage_members_screen.dart`
-- **New**: `mobile/lib/screens/manage_categories_screen.dart`
-- **New**: `mobile/lib/screens/manage_payment_methods_screen.dart`
-- **New**: `backend/service/onboarding_service.py`
-
----
 
 # PHASE 4: Infrastructure & Deployment
 
@@ -324,50 +251,6 @@ class Config:
 - Add rate limiting (Flask-Limiter)
 - Add request logging
 
-## 4.3 Database migration strategy
-
-Since existing data is for your family only:
-1. Create the `families` and `family_members` tables
-2. Create a family record for your current data
-3. Backfill `family_id` on all existing rows
-4. Add NOT NULL constraint after backfill
-5. Create RLS policies
-6. Switch Flutter app from service_role to anon key
-
-```sql
--- Migration script
--- Step 1: Create tables (from Phase 2.1)
-
--- Step 2: Create family for existing data
-INSERT INTO families (id, name, owner_id, default_currency, currency_symbol, default_closing_day)
-VALUES ('YOUR_FAMILY_UUID', 'Mateusz Family', 'YOUR_AUTH_USER_ID', 'BRL', 'R$', 23);
-
--- Step 3: Link existing profiles to family
-INSERT INTO family_members (family_id, user_id, role, display_name)
-SELECT 'YOUR_FAMILY_UUID', auth_id, 'member', name FROM profiles;
-
--- Step 4: Backfill family_id on all tables
-UPDATE expenses SET family_id = 'YOUR_FAMILY_UUID';
-UPDATE earnings SET family_id = 'YOUR_FAMILY_UUID';
-UPDATE categories SET family_id = 'YOUR_FAMILY_UUID';
-UPDATE payment_methods SET family_id = 'YOUR_FAMILY_UUID';
-UPDATE recurring_expenses SET family_id = 'YOUR_FAMILY_UUID';
-UPDATE investments SET family_id = 'YOUR_FAMILY_UUID';
-UPDATE closing_day_overrides SET family_id = 'YOUR_FAMILY_UUID';
-
--- Step 5: Add NOT NULL constraints
-ALTER TABLE expenses ALTER COLUMN family_id SET NOT NULL;
-ALTER TABLE earnings ALTER COLUMN family_id SET NOT NULL;
-ALTER TABLE categories ALTER COLUMN family_id SET NOT NULL;
-ALTER TABLE payment_methods ALTER COLUMN family_id SET NOT NULL;
-ALTER TABLE recurring_expenses ALTER COLUMN family_id SET NOT NULL;
-ALTER TABLE investments ALTER COLUMN family_id SET NOT NULL;
-ALTER TABLE closing_day_overrides ALTER COLUMN family_id SET NOT NULL;
-
--- Step 6: Enable RLS (from Phase 2.3)
-```
-
----
 
 # PHASE 5: Billing & Subscription (Optional, for paid SaaS)
 

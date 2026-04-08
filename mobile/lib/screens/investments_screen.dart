@@ -14,6 +14,7 @@ class InvestmentsScreen extends StatefulWidget {
 class _InvestmentsScreenState extends State<InvestmentsScreen> {
   final _backendService = BackendService();
   bool _isLoading = false;
+  bool _isLoadingUser = true;
   PortfolioData? _portfolio;
   PortfolioDistribution? _distribution;
   String _errorMessage = '';
@@ -30,10 +31,12 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
       final familyData = await _backendService.getFamilyData();
       if (familyData.profiles.isNotEmpty) {
         _currentUser = familyData.profiles.first;
-        _loadData();
       }
     } catch (e) {
-      print("Error loading user profile: $e");
+      setState(() => _errorMessage = 'Failed to load profile: $e');
+    } finally {
+      setState(() => _isLoadingUser = false);
+      if (_currentUser != null) _loadData();
     }
   }
 
@@ -210,8 +213,11 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_currentUser == null || _isLoading) {
+    if (_isLoadingUser || _isLoading) {
       return const Center(child: CircularProgressIndicator());
+    }
+    if (_errorMessage.isNotEmpty && _currentUser == null) {
+      return Center(child: Text('Error: $_errorMessage'));
     }
 
     // Filter Logic

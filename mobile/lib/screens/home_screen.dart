@@ -25,6 +25,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _errorMessage = '';
   String? _selectedCategory;
   int? _closingDay;
+  bool _showUserChart = true;
+  bool _showCategoryChart = true;
 
   @override
   void initState() {
@@ -108,8 +110,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showClosingDayPicker() {
-    final daysInMonth = DateUtils.getDaysInMonth(
-        _currentDate.year, _currentDate.month);
+    final daysInMonth =
+        DateUtils.getDaysInMonth(_currentDate.year, _currentDate.month);
     showModalBottomSheet(
       context: context,
       builder: (ctx) {
@@ -417,35 +419,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
               // User Breakdown
               if (_dashboardData!.userSpendBreakdown.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12)),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Spending by User',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 10),
-                      ..._getFilteredUserBreakdown().entries.map((e) {
-                        // Simple progress bar-like visualization or just text
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(e.key),
-                              Text('R\$ ${e.value.toStringAsFixed(2)}',
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
-                ),
+                _buildUserSpendChart(),
 
               if (_dashboardData!.userEarnedBreakdown.isNotEmpty) ...[
                 const SizedBox(height: 20),
@@ -484,16 +458,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
               // Category Chart
               if (_dashboardData!.categoryBreakdown.isNotEmpty)
-                SizedBox(
-                  height: 250,
-                  child: PieChart(
-                    PieChartData(
-                      sections: _getChartSections(),
-                      centerSpaceRadius: 40,
-                      sectionsSpace: 2,
-                    ),
-                  ),
-                )
+                _buildCategoryChart()
               else
                 const SizedBox(
                     height: 100,
@@ -715,29 +680,207 @@ class _HomeScreenState extends State<HomeScreen> {
     return breakdown;
   }
 
-  List<PieChartSectionData> _getChartSections() {
-    final List<Color> colors = [
-      Colors.blue,
-      Colors.red,
-      Colors.green,
-      Colors.orange,
-      Colors.purple,
-      Colors.teal
-    ];
-    int i = 0;
-    final breakdown = _getFilteredCategoryBreakdown();
+  static const List<Color> _personColors = [
+    Color(0xFF1565C0), // blue
+    Color(0xFFC62828), // red
+    Color(0xFF2E7D32), // green
+    Color(0xFF6A1B9A), // purple
+    Color(0xFFE65100), // orange
+    Color(0xFF00695C), // teal
+    Color(0xFFAD1457), // pink
+    Color(0xFF4527A0), // deep purple
+  ];
 
-    return breakdown.entries.map((entry) {
-      final color = colors[i % colors.length];
-      i++;
+  Widget _buildUserSpendChart() {
+    final breakdown = _getFilteredUserBreakdown();
+    if (breakdown.isEmpty) return const SizedBox.shrink();
+
+    final total = breakdown.values.fold(0.0, (a, b) => a + b);
+    final entries = breakdown.entries
+        .where((e) => e.value > 0)
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final sections = entries.asMap().entries.map((e) {
+      final color = _personColors[e.key % _personColors.length];
       return PieChartSectionData(
         color: color,
-        value: entry.value,
+        value: e.value.value,
         title: '',
-        radius: 50,
-        badgeWidget: Text(entry.key, style: const TextStyle(fontSize: 10)),
-        badgePositionPercentageOffset: 1.3,
+        radius: 60,
       );
     }).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap: () => setState(() => _showUserChart = !_showUserChart),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Spending by Person',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                Icon(_showUserChart
+                    ? Icons.keyboard_arrow_up
+                    : Icons.keyboard_arrow_down),
+              ],
+            ),
+          ),
+          if (_showUserChart) ...[
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: PieChart(
+                PieChartData(
+                  sections: sections,
+                  centerSpaceRadius: 40,
+                  sectionsSpace: 2,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: entries.asMap().entries.map((e) {
+                final color = _personColors[e.key % _personColors.length];
+                final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${e.value.key}: ${pct.toStringAsFixed(1)}%',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  static const List<Color> _chartColors = [
+    Color(0xFF1565C0), // blue 800
+    Color(0xFFC62828), // red 800
+    Color(0xFF2E7D32), // green 800
+    Color(0xFFE65100), // orange 800
+    Color(0xFF6A1B9A), // purple 800
+    Color(0xFF00695C), // teal 800
+    Color(0xFF0277BD), // light blue 800
+    Color(0xFFAD1457), // pink 800
+    Color(0xFF558B2F), // light green 800
+    Color(0xFF4527A0), // deep purple 800
+    Color(0xFF00838F), // cyan 800
+    Color(0xFFF9A825), // amber 800
+    Color(0xFF4E342E), // brown 800
+    Color(0xFF37474F), // blue grey 800
+  ];
+
+  Widget _buildCategoryChart() {
+    final breakdown = _getFilteredCategoryBreakdown();
+    if (breakdown.isEmpty) return const SizedBox.shrink();
+
+    final total = breakdown.values.fold(0.0, (a, b) => a + b);
+    // Sort descending by value and remove zero entries
+    final entries = breakdown.entries
+        .where((e) => e.value > 0)
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final sections = entries.asMap().entries.map((e) {
+      final color = _chartColors[e.key % _chartColors.length];
+      return PieChartSectionData(
+        color: color,
+        value: e.value.value,
+        title: '',
+        radius: 60,
+      );
+    }).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap: () =>
+                setState(() => _showCategoryChart = !_showCategoryChart),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Expenses by Category',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                Icon(_showCategoryChart
+                    ? Icons.keyboard_arrow_up
+                    : Icons.keyboard_arrow_down),
+              ],
+            ),
+          ),
+          if (_showCategoryChart) ...[
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: PieChart(
+                PieChartData(
+                  sections: sections,
+                  centerSpaceRadius: 40,
+                  sectionsSpace: 2,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: entries.asMap().entries.map((e) {
+                final color = _chartColors[e.key % _chartColors.length];
+                final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${e.value.key}: ${pct.toStringAsFixed(1)}%',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
