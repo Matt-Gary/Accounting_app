@@ -6,6 +6,7 @@ from middleware.auth import require_auth
 import pandas as pd
 import io
 import os
+import json
 from dateutil.parser import parse
 
 app = Flask(__name__)
@@ -144,6 +145,30 @@ def materialize_recurring_expenses(month, year, user_id):
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"})
+
+RELEASES_DIR = os.environ.get('RELEASES_DIR', os.path.join(os.path.dirname(__file__), 'releases'))
+
+@app.route('/app/version', methods=['GET'])
+def get_app_version():
+    version_path = os.path.join(RELEASES_DIR, 'version.json')
+    try:
+        with open(version_path, 'r') as f:
+            data = json.load(f)
+        return jsonify(data)
+    except FileNotFoundError:
+        return jsonify({"error": "version file not found"}), 404
+
+@app.route('/app/download', methods=['GET'])
+def download_apk():
+    apk_path = os.path.join(RELEASES_DIR, 'app-release.apk')
+    if not os.path.exists(apk_path):
+        return jsonify({"error": "APK not found"}), 404
+    return send_file(
+        apk_path,
+        mimetype='application/vnd.android.package-archive',
+        as_attachment=True,
+        download_name='app-release.apk'
+    )
 
 # FAMILY DATA ENDPOINT
 @app.route('/family/data', methods=['GET'])
