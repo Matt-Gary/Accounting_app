@@ -1,14 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  static const String baseUrl = 'http://127.0.0.1:5000';
-  //static const String baseUrl = 'http://72.60.137.97:5005';
+  //static const String baseUrl = 'http://127.0.0.1:5000';
+  static const String baseUrl = 'http://72.60.137.97:5005';
 
   Map<String, String> _authHeaders({bool json = false}) {
     final session = Supabase.instance.client.auth.currentSession;
@@ -363,6 +364,54 @@ class BackendService {
       throw Exception('Failed to onboard user: ${response.body}');
     }
   }
+
+  // ============= APP UPDATE =============
+
+  Future<Map<String, dynamic>?> checkForUpdate() async {
+    final uri = Uri.parse('$baseUrl/app/version');
+    try {
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      print('[WARN] Version check failed: $e');
+    }
+    return null;
+  }
+
+  Future<String> downloadApk({
+    required String downloadUrl,
+    required void Function(double progress) onProgress,
+  }) async {
+    final client = http.Client();
+    try {
+      final request = http.Request('GET', Uri.parse(downloadUrl));
+      final streamedResponse = await client.send(request);
+      final contentLength = streamedResponse.contentLength ?? 0;
+      final directory = await _getDownloadDirectory();
+      final filePath = '${directory.path}/app-update.apk';
+      final sink = File(filePath).openWrite();
+      int bytesReceived = 0;
+      await streamedResponse.stream.listen((chunk) {
+        sink.add(chunk);
+        bytesReceived += chunk.length;
+        if (contentLength > 0) onProgress(bytesReceived / contentLength);
+      }).asFuture();
+      await sink.close();
+      return filePath;
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<Directory> _getDownloadDirectory() async {
+    try {
+      final dir = await getExternalStorageDirectory();
+      if (dir != null) return dir;
+    } catch (_) {}
+    return getTemporaryDirectory();
+  }
 }
 
 class PortfolioData {
@@ -566,3 +615,4 @@ class FamilyData {
     );
   }
 }
+

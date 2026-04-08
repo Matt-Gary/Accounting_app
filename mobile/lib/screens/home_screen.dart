@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:open_file/open_file.dart';
 import '../services/backend_service.dart';
 import 'add_expense_screen.dart';
 import 'add_earning_screen.dart';
@@ -50,6 +52,92 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     }
     _loadDashboard();
+  }
+
+  Future<void> _checkForUpdate() async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Checking for updates...')),
+    );
+    try {
+      final versionData = await _backendService.checkForUpdate();
+      if (versionData == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not reach update server.')),
+          );
+        }
+        return;
+      }
+      final packageInfo = await PackageInfo.fromPlatform();
+      final currentCode = int.tryParse(packageInfo.buildNumber) ?? 1;
+      final remoteCode = versionData['version_code'] as int? ?? 1;
+      if (remoteCode <= currentCode) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('You are on the latest version (${packageInfo.version}).')),
+          );
+        }
+        return;
+      }
+      final remoteName = versionData['version_name'] ?? 'unknown';
+      final releaseNotes = versionData['release_notes'] ?? '';
+      final downloadUrl = versionData['apk_url'] as String?;
+      if (downloadUrl == null || !mounted) return;
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Update Available'),
+          content: Text('Version $remoteName is available.\n\n$releaseNotes\n\nDownload and install now?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
+            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Update')),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+
+      final progressNotifier = ValueNotifier<double>(0.0);
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => ValueListenableBuilder<double>(
+          valueListenable: progressNotifier,
+          builder: (_, progress, __) => AlertDialog(
+            title: const Text('Downloading Update'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(value: progress == 0 ? null : progress),
+                const SizedBox(height: 12),
+                Text(progress == 0 ? 'Starting...' : '${(progress * 100).toStringAsFixed(0)}%'),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final apkPath = await _backendService.downloadApk(
+        downloadUrl: downloadUrl,
+        onProgress: (p) => progressNotifier.value = p,
+      );
+      progressNotifier.dispose();
+      if (mounted) Navigator.of(context).pop();
+
+      final result = await OpenFile.open(apkPath, type: 'application/vnd.android.package-archive');
+      if (result.type != ResultType.done && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open installer: ${result.message}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).popUntil((r) => r.isFirst);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Update failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   Future<void> _loadDashboard() async {
@@ -275,6 +363,11 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Colors.white,
         elevation: 0,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.system_update_alt, color: Colors.black),
+            tooltip: 'Check for Updates',
+            onPressed: _checkForUpdate,
+          ),
           IconButton(
             icon: const Icon(Icons.category_outlined, color: Colors.black),
             tooltip: 'Manage Categories',
