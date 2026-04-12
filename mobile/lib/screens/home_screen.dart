@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:open_file/open_file.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../services/backend_service.dart';
 import 'add_expense_screen.dart';
 import 'add_earning_screen.dart';
@@ -74,7 +75,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (remoteCode <= currentCode) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('You are on the latest version (${packageInfo.version}).')),
+            SnackBar(
+                content: Text(
+                    'You are on the latest version (${packageInfo.version}).')),
           );
         }
         return;
@@ -88,15 +91,40 @@ class _HomeScreenState extends State<HomeScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('Update Available'),
-          content: Text('Version $remoteName is available.\n\n$releaseNotes\n\nDownload and install now?'),
+          content: Text(
+              'Version $remoteName is available.\n\n$releaseNotes\n\nDownload and install now?'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
-            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Update')),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Later')),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Update')),
           ],
         ),
       );
       if (confirmed != true || !mounted) return;
 
+      // Check install-unknown-apps permission (Android 8+) before downloading.
+      // .request() opens the Settings screen and returns immediately — it does NOT
+      // wait for the user to grant. So if not granted, open settings and bail out;
+      // the user taps the button again after enabling the toggle.
+      final installPermission = await Permission.requestInstallPackages.status;
+      if (!installPermission.isGranted) {
+        await openAppSettings(); // opens Install Unknown Apps settings page
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Enable "Install unknown apps" for this app, then tap Update again.'),
+              duration: Duration(seconds: 6),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (!mounted) return;
       final progressNotifier = ValueNotifier<double>(0.0);
       showDialog(
         context: context,
@@ -110,7 +138,9 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 LinearProgressIndicator(value: progress == 0 ? null : progress),
                 const SizedBox(height: 12),
-                Text(progress == 0 ? 'Starting...' : '${(progress * 100).toStringAsFixed(0)}%'),
+                Text(progress == 0
+                    ? 'Starting...'
+                    : '${(progress * 100).toStringAsFixed(0)}%'),
               ],
             ),
           ),
@@ -124,17 +154,20 @@ class _HomeScreenState extends State<HomeScreen> {
       progressNotifier.dispose();
       if (mounted) Navigator.of(context).pop();
 
-      final result = await OpenFile.open(apkPath, type: 'application/vnd.android.package-archive');
+      final result = await OpenFile.open(apkPath,
+          type: 'application/vnd.android.package-archive');
       if (result.type != ResultType.done && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open installer: ${result.message}')),
+          SnackBar(
+              content: Text('Could not open installer: ${result.message}')),
         );
       }
     } catch (e) {
       if (mounted) {
         Navigator.of(context).popUntil((r) => r.isFirst);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Update failed: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Update failed: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -559,6 +592,45 @@ class _HomeScreenState extends State<HomeScreen> {
 
               const SizedBox(height: 20),
 
+              if (_dashboardData!.earnings.isNotEmpty) ...[
+                ExpansionTile(
+                  title: const Text('Recent Earnings',
+                      style:
+                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  children: _dashboardData!.earnings.map((earning) {
+                    return ListTile(
+                      leading: const CircleAvatar(
+                        backgroundColor: Colors.green,
+                        child: Icon(Icons.attach_money, color: Colors.white),
+                      ),
+                      title: Text(earning.userName ?? 'Unknown'),
+                      subtitle: earning.description != null &&
+                              earning.description!.isNotEmpty
+                          ? Text(earning.description!)
+                          : null,
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            DateFormat('dd/MM').format(earning.earnedAt),
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey),
+                          ),
+                          Text(
+                            'R\$ ${earning.amount.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 20),
+              ],
+
               // Recent Expenses List (from raw expenses)
               const Text('Recent Expenses',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
@@ -789,9 +861,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (breakdown.isEmpty) return const SizedBox.shrink();
 
     final total = breakdown.values.fold(0.0, (a, b) => a + b);
-    final entries = breakdown.entries
-        .where((e) => e.value > 0)
-        .toList()
+    final entries = breakdown.entries.where((e) => e.value > 0).toList()
       ..sort((a, b) => b.value.compareTo(a.value));
 
     final sections = entries.asMap().entries.map((e) {
@@ -865,6 +935,73 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }).toList(),
             ),
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            ...entries.asMap().entries.map((e) {
+              final color = _personColors[e.key % _personColors.length];
+              final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text(
+                          e.value.key[0].toUpperCase(),
+                          style: TextStyle(
+                            color: color,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            e.value.key,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 2),
+                          LinearProgressIndicator(
+                            value: total > 0 ? e.value.value / total : 0,
+                            backgroundColor: Colors.grey[200],
+                            color: color,
+                            minHeight: 4,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          'R\$ ${e.value.value.toStringAsFixed(2)}',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '${pct.toStringAsFixed(1)}%',
+                          style:
+                              const TextStyle(fontSize: 11, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }),
           ],
         ],
       ),
@@ -894,9 +1031,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final total = breakdown.values.fold(0.0, (a, b) => a + b);
     // Sort descending by value and remove zero entries
-    final entries = breakdown.entries
-        .where((e) => e.value > 0)
-        .toList()
+    final entries = breakdown.entries.where((e) => e.value > 0).toList()
       ..sort((a, b) => b.value.compareTo(a.value));
 
     final sections = entries.asMap().entries.map((e) {

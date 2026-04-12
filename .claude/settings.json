@@ -14,7 +14,8 @@
       "Bash(grep -n \"signOut\\\\|logout\\\\|Logout\\\\|Log Out\" \"/c/Projects/Accounting_app/Accounting_app/mobile/lib/screens/\"*.dart)",
       "Bash(find /c/Projects/Accounting_app/Accounting_app/mobile/android -name \"local.properties\" -exec cat {} \\\\;)",
       "Read(//c/flutter/src/flutter/**)",
-      "Read(//c/flutter/src/flutter/packages/flutter_tools/gradle//**)"
+      "Read(//c/flutter/src/flutter/packages/flutter_tools/gradle//**)",
+      "Bash(find \"c:\\\\Projects\\\\Accounting_app\\\\Accounting_app\\\\backend\\\\migrations\" -name \"*.sql\" -exec cat {} \\\\;)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Mateusz\\.claude\\plans"

@@ -207,6 +207,7 @@ class Earning {
   final double amount;
   final String? description;
   final DateTime earnedAt;
+  final String? userName;
 
   Earning({
     this.id,
@@ -214,6 +215,7 @@ class Earning {
     required this.amount,
     this.description,
     required this.earnedAt,
+    this.userName,
   });
 
   factory Earning.fromJson(Map<String, dynamic> json) {
@@ -223,6 +225,7 @@ class Earning {
       amount: (json['amount'] as num? ?? 0.0).toDouble(),
       description: json['description'],
       earnedAt: DateTime.parse(json['earned_at']),
+      userName: json['user_name'],
     );
   }
 

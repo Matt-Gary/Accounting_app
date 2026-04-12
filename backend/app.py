@@ -608,7 +608,8 @@ def create_earning():
             user_id,
             data['amount'],
             data.get('description'),
-            data['earned_at']
+            data['earned_at'],
+            family_id=g.family_id
         )
         return jsonify(new_earning), 201
     except Exception as e:

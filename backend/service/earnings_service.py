@@ -32,7 +32,7 @@ def fetch_earnings_for_period(month, year, user_id=None, family_id=None):
         
     return filtered
 
-def add_earning(user_id, amount, description, earned_at):
+def add_earning(user_id, amount, description, earned_at, family_id=None):
     client = get_pg()
     data = {
         "user_id": user_id,
@@ -40,5 +40,8 @@ def add_earning(user_id, amount, description, earned_at):
         "description": description,
         "earned_at": earned_at
     }
+    if family_id:
+        data["family_id"] = family_id
+        
     res = client.from_("earnings").insert(data).execute()
-    return res.data
+    return res.data[0] if res.data else {}
