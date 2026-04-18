@@ -114,7 +114,16 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Expense updated successfully')),
         );
-        Navigator.pop(context, updated);
+        // Merge raw DB response with display-friendly labels from the selected
+        // dropdown objects so the details screen refreshes without a round-trip.
+        final enriched = {
+          ...widget.expense,
+          ...updated,
+          'category_label': _selectedCategory!.label,
+          'payment_method_name': _selectedPaymentMethod!.name,
+          'user_name': _selectedUser!.name,
+        };
+        Navigator.pop(context, enriched);
       }
     } catch (e) {
       if (mounted) {
