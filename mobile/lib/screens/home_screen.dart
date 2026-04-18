@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -413,7 +414,11 @@ class _HomeScreenState extends State<HomeScreen> {
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.black),
             tooltip: 'Sign out',
-            onPressed: () => Supabase.instance.client.auth.signOut(),
+            onPressed: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('remember_me');
+              await Supabase.instance.client.auth.signOut();
+            },
           ),
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.black),
