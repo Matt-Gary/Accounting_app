@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/main_screen.dart';
 import 'screens/login_screen.dart';
@@ -15,6 +16,14 @@ Future<void> main() async {
       autoRefreshToken: true,
     ),
   );
+
+  // If the user did not check "Remember me", clear any persisted session
+  // so they must log in again on each cold start.
+  final prefs = await SharedPreferences.getInstance();
+  final rememberMe = prefs.getBool('remember_me') ?? true;
+  if (!rememberMe && Supabase.instance.client.auth.currentSession != null) {
+    await Supabase.instance.client.auth.signOut();
+  }
 
   runApp(const MyApp());
 }

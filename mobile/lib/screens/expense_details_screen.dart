@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/backend_service.dart';
+import 'edit_expense_screen.dart';
 
 class ExpenseDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> expense;
@@ -13,10 +14,33 @@ class ExpenseDetailsScreen extends StatefulWidget {
 
 class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
   final _backendService = BackendService();
+  late Map<String, dynamic> _expense;
+
+  @override
+  void initState() {
+    super.initState();
+    _expense = Map<String, dynamic>.from(widget.expense);
+  }
+
+  Future<void> _editExpense() async {
+    final updated = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EditExpenseScreen(expense: _expense),
+      ),
+    );
+    if (updated != null && mounted) {
+      setState(() {
+        _expense = {
+          ..._expense,
+          ...updated,
+        };
+      });
+    }
+  }
 
   Future<void> _deleteExpense() async {
-    // Block deletion of recurring-linked expenses
-    if (widget.expense['recurring_id'] != null) {
+    if (_expense['recurring_id'] != null) {
       await showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -56,12 +80,12 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
 
     if (confirmed == true && mounted) {
       try {
-        await _backendService.deleteExpense(widget.expense['id']);
+        await _backendService.deleteExpense(_expense['id']);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Expense deleted successfully')),
           );
-          Navigator.pop(context, true); // Return true to indicate deletion
+          Navigator.pop(context, true);
         }
       } catch (e) {
         if (mounted) {
@@ -75,14 +99,12 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Parsing data safely
-    final double amount = (widget.expense['amount'] as num).toDouble();
-    final String currency = widget.expense['currency'] ?? 'BRL';
-    final String category = widget.expense['category_label'] ?? 'Unknown';
-    final String method = widget.expense['payment_method_name'] ?? 'Unknown';
-    final String userName = widget.expense['user_name'] ?? 'Unknown';
-    final DateTime date = DateTime.parse(widget.expense['spent_at']);
-    final String? comment = widget.expense['comment'];
+    final double amount = (_expense['amount'] as num).toDouble();
+    final String category = _expense['category_label'] ?? 'Unknown';
+    final String method = _expense['payment_method_name'] ?? 'Unknown';
+    final String userName = _expense['user_name'] ?? 'Unknown';
+    final DateTime date = DateTime.parse(_expense['spent_at']);
+    final String? comment = _expense['comment'];
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
@@ -93,6 +115,10 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, color: Colors.black),
+            onPressed: _editExpense,
+          ),
           IconButton(
             icon: const Icon(Icons.delete, color: Colors.red),
             onPressed: _deleteExpense,
@@ -112,7 +138,7 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.grey.withOpacity(0.1),
+                    color: Colors.grey.withValues(alpha: 0.1),
                     blurRadius: 10,
                     offset: const Offset(0, 5),
                   ),

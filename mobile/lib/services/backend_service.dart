@@ -8,8 +8,8 @@ import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  //static const String baseUrl = 'http://127.0.0.1:5000';
-  static const String baseUrl = 'http://72.60.137.97:5005';
+  static const String baseUrl = 'http://127.0.0.1:5000';
+  //static const String baseUrl = 'http://72.60.137.97:5005';
 
   Map<String, String> _authHeaders({bool json = false}) {
     final session = Supabase.instance.client.auth.currentSession;
@@ -134,6 +134,19 @@ class BackendService {
     if (response.statusCode != 200) {
       throw Exception('Failed to delete expense: ${response.body}');
     }
+  }
+
+  Future<Map<String, dynamic>> updateExpense(
+      String id, Map<String, dynamic> data) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/expenses/$id'),
+      headers: _authHeaders(json: true),
+      body: jsonEncode(data),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Failed to update expense: ${response.body}');
   }
 
   Future<PortfolioDistribution> getPortfolioDistribution(

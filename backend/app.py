@@ -353,6 +353,27 @@ def create_expenses_bulk():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/expenses/<expense_id>', methods=['PUT'])
+@require_auth
+def update_expense(expense_id):
+    data = request.json
+    allowed = {'amount', 'category_key', 'payment_method_id', 'spent_at', 'comment', 'user_id'}
+    update_data = {k: v for k, v in data.items() if k in allowed}
+    if not update_data:
+        return jsonify({"error": "No valid fields to update"}), 400
+    try:
+        client = get_pg()
+        res = client.from_("expenses")\
+            .update(update_data)\
+            .eq("id", expense_id)\
+            .eq("family_id", g.family_id)\
+            .execute()
+        if not res.data:
+            return jsonify({"error": "Expense not found or unauthorized"}), 404
+        return jsonify(res.data[0]), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # INVESTMENTS ENDPOINTS
 @app.route('/investments', methods=['GET'])
 @require_auth
