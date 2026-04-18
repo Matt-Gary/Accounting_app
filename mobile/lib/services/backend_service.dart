@@ -318,11 +318,28 @@ class BackendService {
     }
   }
 
-  Future<FamilyData> getFamilyData() async {
+  static FamilyData? _familyDataCache;
+  static DateTime? _familyDataCacheTime;
+  static const _familyCacheTtl = Duration(minutes: 5);
+
+  static void clearFamilyDataCache() {
+    _familyDataCache = null;
+    _familyDataCacheTime = null;
+  }
+
+  Future<FamilyData> getFamilyData({bool forceRefresh = false}) async {
+    if (!forceRefresh &&
+        _familyDataCache != null &&
+        _familyDataCacheTime != null &&
+        DateTime.now().difference(_familyDataCacheTime!) < _familyCacheTtl) {
+      return _familyDataCache!;
+    }
     final uri = Uri.parse('$baseUrl/family/data');
     final response = await http.get(uri, headers: _authHeaders());
     if (response.statusCode == 200) {
-      return FamilyData.fromJson(jsonDecode(response.body));
+      _familyDataCache = FamilyData.fromJson(jsonDecode(response.body));
+      _familyDataCacheTime = DateTime.now();
+      return _familyDataCache!;
     } else {
       throw Exception('Failed to load family data: ${response.body}');
     }
