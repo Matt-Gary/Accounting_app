@@ -60,27 +60,47 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
+    final bool isInstallment = _expense['installment_group_id'] != null;
+    final String? scope = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("Delete Expense"),
-        content: const Text("Are you sure you want to delete this expense?"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("Delete", style: TextStyle(color: Colors.red)),
-          ),
-        ],
+        content: Text(isInstallment
+            ? "This expense is part of an installment series. What do you want to delete?"
+            : "Are you sure you want to delete this expense?"),
+        actions: isInstallment
+            ? [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, null),
+                  child: const Text("Cancel"),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, 'this'),
+                  child: const Text("Only this installment"),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, 'future'),
+                  child: const Text("This + future",
+                      style: TextStyle(color: Colors.red)),
+                ),
+              ]
+            : [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, null),
+                  child: const Text("Cancel"),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, 'this'),
+                  child: const Text("Delete",
+                      style: TextStyle(color: Colors.red)),
+                ),
+              ],
       ),
     );
 
-    if (confirmed == true && mounted) {
+    if (scope != null && mounted) {
       try {
-        await _backendService.deleteExpense(_expense['id']);
+        await _backendService.deleteExpense(_expense['id'], scope: scope);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Expense deleted successfully')),

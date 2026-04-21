@@ -7,6 +7,7 @@ import pandas as pd
 import io
 import os
 import json
+import uuid
 from dateutil.parser import parse
 
 app = Flask(__name__)
@@ -341,11 +342,23 @@ def create_expenses_bulk():
     items = request.json
     if not isinstance(items, list) or len(items) == 0:
         return jsonify({"error": "Expected a non-empty list"}), 400
+
+    # If this is a multi-installment submission (more than one row, all marked
+    # installments > 1), tag every row with a shared installment_group_id so
+    # the "delete future installments" flow can find siblings.
+    is_installment_group = (
+        len(items) > 1
+        and all(isinstance(it.get('installments'), int) and it.get('installments', 0) > 1 for it in items)
+    )
+    group_id = str(uuid.uuid4()) if is_installment_group else None
+
     for item in items:
         if 'user_id' not in item:
             item['user_id'] = g.profile_id
         if g.family_id:
             item['family_id'] = g.family_id
+        if group_id is not None and not item.get('installment_group_id'):
+            item['installment_group_id'] = group_id
     try:
         client = get_pg()
         res = client.from_("expenses").insert(items).execute()
@@ -639,11 +652,44 @@ def create_earning():
 @app.route('/expenses/<expense_id>', methods=['DELETE'])
 @require_auth
 def delete_expense(expense_id):
+    # scope=this (default): delete just this row.
+    # scope=future: delete this row + all siblings with the same
+    #   installment_group_id whose spent_at >= this row's spent_at.
+    scope = request.args.get('scope', 'this')
+
     try:
         client = get_pg()
-        query = client.from_("expenses").delete().eq("id", expense_id)
 
-        # Scope to family (any member can delete) or fall back to own user
+        if scope == 'future':
+            # Need the target's group_id and spent_at first.
+            select = client.from_("expenses").select("id, spent_at, installment_group_id").eq("id", expense_id)
+            if g.family_id:
+                select = select.eq("family_id", g.family_id)
+            else:
+                select = select.eq("user_id", g.profile_id)
+            target = select.execute().data
+            if not target:
+                return jsonify({"error": "Expense not found or not authorised"}), 404
+            target = target[0]
+
+            if not target.get('installment_group_id'):
+                # Not part of a group — fall back to single-row delete.
+                scope = 'this'
+            else:
+                del_q = client.from_("expenses").delete()\
+                    .eq("installment_group_id", target['installment_group_id'])\
+                    .gte("spent_at", target['spent_at'])
+                if g.family_id:
+                    del_q = del_q.eq("family_id", g.family_id)
+                else:
+                    del_q = del_q.eq("user_id", g.profile_id)
+                res = del_q.execute()
+                return jsonify({
+                    "message": "Installments deleted successfully",
+                    "deleted_count": len(res.data or [])
+                }), 200
+
+        query = client.from_("expenses").delete().eq("id", expense_id)
         if g.family_id:
             query = query.eq("family_id", g.family_id)
         else:

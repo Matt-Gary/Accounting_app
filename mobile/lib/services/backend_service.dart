@@ -8,8 +8,8 @@ import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  //static const String baseUrl = 'http://127.0.0.1:5000';
-  static const String baseUrl = 'http://72.60.137.97:5005';
+  static const String baseUrl = 'http://127.0.0.1:5000';
+  //static const String baseUrl = 'http://72.60.137.97:5005';
 
   Map<String, String> _authHeaders({bool json = false}) {
     final session = Supabase.instance.client.auth.currentSession;
@@ -128,8 +128,10 @@ class BackendService {
     }
   }
 
-  Future<void> deleteExpense(String id) async {
-    final uri = Uri.parse('$baseUrl/expenses/$id');
+  Future<void> deleteExpense(String id, {String scope = 'this'}) async {
+    final uri = Uri.parse('$baseUrl/expenses/$id').replace(
+      queryParameters: {'scope': scope},
+    );
     final response = await http.delete(uri, headers: _authHeaders());
     if (response.statusCode != 200) {
       throw Exception('Failed to delete expense: ${response.body}');
