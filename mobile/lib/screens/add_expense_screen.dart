@@ -57,17 +57,6 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
     }
   }
 
-  DateTime _addMonths(DateTime date, int months) {
-    int year = date.year + (date.month + months - 1) ~/ 12;
-    int month = (date.month + months - 1) % 12 + 1;
-    int day = date.day;
-    int lastDayOfNewMonth = DateTime(year, month + 1, 0).day;
-    if (day > lastDayOfNewMonth) {
-      day = lastDayOfNewMonth;
-    }
-    return DateTime(year, month, day, date.hour, date.minute, date.second);
-  }
-
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedUser == null ||
@@ -99,11 +88,40 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
             (amount - (installmentAmount * (installments - 1)))
                 .toStringAsFixed(2));
 
+        // Resolve the effective closing day for the purchase month so we know
+        // whether the first installment crosses into next month's bill.
+        int effectiveClosingDay = _selectedPaymentMethod!.closingDay ?? 23;
+        if (_selectedPaymentMethod!.isCreditCard) {
+          try {
+            final override = await _backendService.getClosingDayOverride(
+                _spentAt.month, _spentAt.year);
+            if (override != null) effectiveClosingDay = override;
+          } catch (_) {
+            // No override → keep PM default.
+          }
+        }
+
+        // Installment 1 keeps the real purchase date unless the purchase
+        // crosses closing, in which case it moves to the 1st of next month.
+        // Installments 2..N always land on the 1st of subsequent months so
+        // the billing period is unambiguous regardless of closing-day drift.
+        final bool crossesClosing = _selectedPaymentMethod!.isCreditCard &&
+            _spentAt.day >= effectiveClosingDay;
+        final DateTime firstInstallmentDate = crossesClosing
+            ? DateTime(_spentAt.year, _spentAt.month + 1, 1)
+            : _spentAt;
+        final DateTime firstBillingMonth = crossesClosing
+            ? firstInstallmentDate
+            : DateTime(_spentAt.year, _spentAt.month, 1);
+
         for (int i = 0; i < installments; i++) {
           final isLast = i == installments - 1;
           final currentAmount =
               isLast ? lastInstallmentAmount : installmentAmount;
-          final installmentDate = _addMonths(_spentAt, i);
+          final installmentDate = i == 0
+              ? firstInstallmentDate
+              : DateTime(firstBillingMonth.year,
+                  firstBillingMonth.month + i, 1);
 
           final commentSuffix = "(${i + 1}/$installments)";
           final finalComment = baseComment.isEmpty

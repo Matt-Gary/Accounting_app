@@ -16,7 +16,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   bool _loading = false;
   bool _obscurePassword = true;
-  bool _rememberMe = false;
+  bool _rememberMe = true;
 
   @override
   void dispose() {

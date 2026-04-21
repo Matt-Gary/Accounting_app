@@ -128,8 +128,10 @@ class BackendService {
     }
   }
 
-  Future<void> deleteExpense(String id) async {
-    final uri = Uri.parse('$baseUrl/expenses/$id');
+  Future<void> deleteExpense(String id, {String scope = 'this'}) async {
+    final uri = Uri.parse('$baseUrl/expenses/$id').replace(
+      queryParameters: {'scope': scope},
+    );
     final response = await http.delete(uri, headers: _authHeaders());
     if (response.statusCode != 200) {
       throw Exception('Failed to delete expense: ${response.body}');

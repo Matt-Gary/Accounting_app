@@ -105,6 +105,7 @@ class Expense {
   final DateTime spentAt;
   final int installments;
   final String? recurringId;
+  final String? installmentGroupId;
 
   Expense({
     this.id,
@@ -116,6 +117,7 @@ class Expense {
     required this.spentAt,
     this.installments = 0,
     this.recurringId,
+    this.installmentGroupId,
   });
 
   factory Expense.fromJson(Map<String, dynamic> json) {
@@ -129,6 +131,7 @@ class Expense {
       spentAt: DateTime.parse(json['spent_at']),
       installments: json['installments'] ?? 0,
       recurringId: json['recurring_id'],
+      installmentGroupId: json['installment_group_id'],
     );
   }
 
@@ -143,6 +146,7 @@ class Expense {
       'spent_at': spentAt.toIso8601String(),
       'installments': installments,
       'recurring_id': recurringId,
+      if (installmentGroupId != null) 'installment_group_id': installmentGroupId,
     };
   }
 }
