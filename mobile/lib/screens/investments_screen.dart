@@ -47,9 +47,20 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
     });
 
     try {
-      final data = await _backendService.getInvestments();
-      setState(() => _portfolio = data);
-      _loadDistribution();
+      List<String>? typesFilter;
+      if (_chartTypeFilter != 'All') {
+        typesFilter = [_chartTypeFilter.toLowerCase()];
+      }
+
+      final results = await Future.wait([
+        _backendService.getInvestments(),
+        _backendService.getPortfolioDistribution(investmentTypes: typesFilter),
+      ]);
+
+      setState(() {
+        _portfolio = results[0] as PortfolioData;
+        _distribution = results[1] as PortfolioDistribution;
+      });
     } catch (e) {
       setState(() => _errorMessage = e.toString());
     } finally {
@@ -344,7 +355,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                       const SizedBox(height: 10),
 
                       if (filteredList != null && filteredList.isNotEmpty)
-                        ...filteredList.map(_buildInvestmentCard).toList()
+                        ...filteredList.map(_buildInvestmentCard)
                       else
                         const Padding(
                           padding: EdgeInsets.all(20.0),
@@ -490,7 +501,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
             children: [
               Text(
                 showingIndividual
-                    ? "Individual ${_chartTypeFilter} Holdings"
+                    ? "Individual $_chartTypeFilter Holdings"
                     : "Portfolio Distribution by Type",
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
@@ -515,7 +526,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                           padding: const EdgeInsets.only(right: 4),
                           child: _chartTypeFilterBtn(type),
                         ))
-                    .toList(),
+                    ,
               ],
             ),
           ),

@@ -19,28 +19,79 @@ class BackendService {
     };
   }
 
-  Future<DashboardData> getDashboard(
-      {required int month,
-      required int year,
-      String? userId,
-      int? closingDay}) async {
-    final queryParams = {
-      'month': month.toString(),
-      'year': year.toString(),
-      if (userId != null) 'user_id': userId,
-      if (closingDay != null) 'closing_day': closingDay.toString(),
-    };
+  // Executes [fn] with auth headers. On 401, refreshes the session once and retries.
+  Future<http.Response> _withAuth(
+    Future<http.Response> Function(Map<String, String>) fn, {
+    bool json = false,
+  }) async {
+    final response = await fn(_authHeaders(json: json));
+    if (response.statusCode != 401) return response;
 
-    final uri =
-        Uri.parse('$baseUrl/dashboard').replace(queryParameters: queryParams);
-
-    final response = await http.get(uri, headers: _authHeaders());
-
-    if (response.statusCode == 200) {
-      return DashboardData.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception('Failed to load dashboard: ${response.body}');
+    try {
+      await Supabase.instance.client.auth.refreshSession();
+    } catch (_) {
+      return response;
     }
+
+    return fn(_authHeaders(json: json));
+  }
+
+  static final Map<String, DashboardData> _dashboardCache = {};
+  static final Map<String, DateTime> _dashboardCacheTime = {};
+  static const _dashboardHardTtl = Duration(minutes: 2);
+
+  static bool hasDashboardCache(int month, int year) =>
+      _dashboardCache.containsKey('${month}_$year');
+
+  static void clearDashboardCache() {
+    _dashboardCache.clear();
+    _dashboardCacheTime.clear();
+  }
+
+  Future<DashboardData> getDashboard({
+    required int month,
+    required int year,
+    String? userId,
+    int? closingDay,
+    void Function(DashboardData)? onRefresh,
+  }) async {
+    final cacheKey = '${month}_${year}_${closingDay ?? 0}';
+    final cached = _dashboardCache[cacheKey];
+    final cacheTime = _dashboardCacheTime[cacheKey];
+    final now = DateTime.now();
+
+    Future<DashboardData> fetchFresh() async {
+      final queryParams = {
+        'month': month.toString(),
+        'year': year.toString(),
+        if (userId != null) 'user_id': userId,
+        if (closingDay != null) 'closing_day': closingDay.toString(),
+      };
+      final uri =
+          Uri.parse('$baseUrl/dashboard').replace(queryParameters: queryParams);
+      final response = await _withAuth((h) => http.get(uri, headers: h));
+      if (response.statusCode == 200) {
+        final data = DashboardData.fromJson(jsonDecode(response.body));
+        _dashboardCache[cacheKey] = data;
+        _dashboardCacheTime[cacheKey] = DateTime.now();
+        return data;
+      } else {
+        throw Exception('Failed to load dashboard: ${response.body}');
+      }
+    }
+
+    if (cached != null && cacheTime != null) {
+      final age = now.difference(cacheTime);
+      if (age < _dashboardHardTtl) {
+        return cached;
+      }
+      if (onRefresh != null) {
+        fetchFresh().then(onRefresh).catchError((_) {});
+      }
+      return cached;
+    }
+
+    return fetchFresh();
   }
 
   Future<void> downloadReport(int month, int year) async {
@@ -50,7 +101,7 @@ class BackendService {
     });
 
     try {
-      final response = await http.get(uri, headers: _authHeaders());
+      final response = await _withAuth((h) => http.get(uri, headers: h));
       if (response.statusCode == 200) {
         final tempDir = Directory.systemTemp;
         final filePath = '${tempDir.path}/report_${month}_$year.xlsx';
@@ -71,10 +122,10 @@ class BackendService {
 
   Future<Earning> addEarning(Earning earning) async {
     final uri = Uri.parse('$baseUrl/earnings');
-    final response = await http.post(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode(earning.toJson()),
+    final body = jsonEncode(earning.toJson());
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: body),
+      json: true,
     );
 
     if (response.statusCode == 201) {
@@ -86,7 +137,7 @@ class BackendService {
 
   Future<PortfolioData> getInvestments() async {
     final uri = Uri.parse('$baseUrl/investments');
-    final response = await http.get(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.get(uri, headers: h));
 
     if (response.statusCode == 200) {
       return PortfolioData.fromJson(jsonDecode(response.body));
@@ -97,10 +148,10 @@ class BackendService {
 
   Future<void> addInvestment(Map<String, dynamic> data) async {
     final uri = Uri.parse('$baseUrl/investments');
-    final response = await http.post(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode(data),
+    final body = jsonEncode(data);
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: body),
+      json: true,
     );
     if (response.statusCode != 201) {
       throw Exception('Failed to add investment: ${response.body}');
@@ -110,10 +161,10 @@ class BackendService {
   Future<void> updateInvestmentById(
       String id, Map<String, dynamic> data) async {
     final uri = Uri.parse('$baseUrl/investments/$id');
-    final response = await http.put(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode(data),
+    final body = jsonEncode(data);
+    final response = await _withAuth(
+      (h) => http.put(uri, headers: h, body: body),
+      json: true,
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to update investment: ${response.body}');
@@ -122,7 +173,7 @@ class BackendService {
 
   Future<void> deleteInvestmentById(String id) async {
     final uri = Uri.parse('$baseUrl/investments/$id');
-    final response = await http.delete(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
     if (response.statusCode != 200) {
       throw Exception('Failed to delete investment: ${response.body}');
     }
@@ -132,7 +183,7 @@ class BackendService {
     final uri = Uri.parse('$baseUrl/expenses/$id').replace(
       queryParameters: {'scope': scope},
     );
-    final response = await http.delete(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
     if (response.statusCode != 200) {
       throw Exception('Failed to delete expense: ${response.body}');
     }
@@ -140,10 +191,10 @@ class BackendService {
 
   Future<Map<String, dynamic>> updateExpense(
       String id, Map<String, dynamic> data) async {
-    final response = await http.put(
-      Uri.parse('$baseUrl/expenses/$id'),
-      headers: _authHeaders(json: true),
-      body: jsonEncode(data),
+    final body = jsonEncode(data);
+    final response = await _withAuth(
+      (h) => http.put(Uri.parse('$baseUrl/expenses/$id'), headers: h, body: body),
+      json: true,
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -160,7 +211,7 @@ class BackendService {
 
     final uri = Uri.parse('$baseUrl/investments/distribution')
         .replace(queryParameters: queryParams);
-    final response = await http.get(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.get(uri, headers: h));
 
     if (response.statusCode == 200) {
       return PortfolioDistribution.fromJson(jsonDecode(response.body));
@@ -178,7 +229,7 @@ class BackendService {
       'year': year.toString(),
     });
 
-    final response = await http.get(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.get(uri, headers: h));
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
@@ -191,15 +242,14 @@ class BackendService {
   Future<void> setClosingDayOverride(
       int month, int year, int closingDay) async {
     final uri = Uri.parse('$baseUrl/closing-day-overrides');
-
-    final response = await http.post(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode({
-        'month': month,
-        'year': year,
-        'closing_day': closingDay,
-      }),
+    final body = jsonEncode({
+      'month': month,
+      'year': year,
+      'closing_day': closingDay,
+    });
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: body),
+      json: true,
     );
 
     if (response.statusCode != 200) {
@@ -209,7 +259,7 @@ class BackendService {
 
   Future<void> deleteRecurringExpense(String id) async {
     final uri = Uri.parse('$baseUrl/recurring-expenses/$id');
-    final response = await http.delete(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
 
     if (response.statusCode != 200) {
       throw Exception('Failed to delete recurring expense: ${response.body}');
@@ -219,10 +269,10 @@ class BackendService {
   Future<void> updateRecurringExpense(
       String id, Map<String, dynamic> data) async {
     final uri = Uri.parse('$baseUrl/recurring-expenses/$id');
-    final response = await http.put(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode(data),
+    final body = jsonEncode(data);
+    final response = await _withAuth(
+      (h) => http.put(uri, headers: h, body: body),
+      json: true,
     );
 
     if (response.statusCode != 200) {
@@ -237,7 +287,7 @@ class BackendService {
       'year': year.toString(),
     });
 
-    final response = await http.delete(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
 
     if (response.statusCode != 200 && response.statusCode != 404) {
       throw Exception(
@@ -249,7 +299,7 @@ class BackendService {
 
   Future<List<Map<String, dynamic>>> getRecurringExpenses() async {
     final uri = Uri.parse('$baseUrl/recurring-expenses');
-    final response = await http.get(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.get(uri, headers: h));
 
     if (response.statusCode == 200) {
       return List<Map<String, dynamic>>.from(jsonDecode(response.body));
@@ -261,10 +311,10 @@ class BackendService {
   Future<Map<String, dynamic>> addRecurringExpense(
       Map<String, dynamic> data) async {
     final uri = Uri.parse('$baseUrl/recurring-expenses');
-    final response = await http.post(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode(data),
+    final body = jsonEncode(data);
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: body),
+      json: true,
     );
 
     if (response.statusCode == 201) {
@@ -278,7 +328,7 @@ class BackendService {
 
   Future<List<Category>> getCategoriesForManagement() async {
     final uri = Uri.parse('$baseUrl/categories');
-    final response = await http.get(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.get(uri, headers: h));
     if (response.statusCode == 200) {
       final List<dynamic> data = jsonDecode(response.body);
       return data.map((e) => Category.fromJson(e)).toList();
@@ -288,10 +338,10 @@ class BackendService {
 
   Future<Category> createCustomCategory(String label) async {
     final uri = Uri.parse('$baseUrl/categories');
-    final response = await http.post(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode({'label': label}),
+    final body = jsonEncode({'label': label});
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: body),
+      json: true,
     );
     if (response.statusCode == 201) {
       return Category.fromJson(jsonDecode(response.body));
@@ -301,7 +351,7 @@ class BackendService {
 
   Future<void> deleteCustomCategory(String key) async {
     final uri = Uri.parse('$baseUrl/categories/$key');
-    final response = await http.delete(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
     if (response.statusCode != 200) {
       final body = jsonDecode(response.body);
       throw Exception(body['error'] ?? 'Failed to delete category');
@@ -310,10 +360,10 @@ class BackendService {
 
   Future<void> setCategoryVisibility(String key, {required bool hidden}) async {
     final uri = Uri.parse('$baseUrl/categories/$key/visibility');
-    final response = await http.put(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode({'hidden': hidden}),
+    final body = jsonEncode({'hidden': hidden});
+    final response = await _withAuth(
+      (h) => http.put(uri, headers: h, body: body),
+      json: true,
     );
     if (response.statusCode != 200) {
       throw Exception('Failed to update category visibility: ${response.body}');
@@ -337,7 +387,7 @@ class BackendService {
       return _familyDataCache!;
     }
     final uri = Uri.parse('$baseUrl/family/data');
-    final response = await http.get(uri, headers: _authHeaders());
+    final response = await _withAuth((h) => http.get(uri, headers: h));
     if (response.statusCode == 200) {
       _familyDataCache = FamilyData.fromJson(jsonDecode(response.body));
       _familyDataCacheTime = DateTime.now();
@@ -349,10 +399,10 @@ class BackendService {
 
   Future<void> addExpense(Map<String, dynamic> data) async {
     final uri = Uri.parse('$baseUrl/expenses');
-    final response = await http.post(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode(data),
+    final body = jsonEncode(data);
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: body),
+      json: true,
     );
     if (response.statusCode != 201) {
       throw Exception('Failed to add expense: ${response.body}');
@@ -361,10 +411,10 @@ class BackendService {
 
   Future<void> addExpenses(List<Map<String, dynamic>> data) async {
     final uri = Uri.parse('$baseUrl/expenses/bulk');
-    final response = await http.post(
-      uri,
-      headers: _authHeaders(json: true),
-      body: jsonEncode(data),
+    final body = jsonEncode(data);
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: body),
+      json: true,
     );
     if (response.statusCode != 201) {
       throw Exception('Failed to add expenses: ${response.body}');

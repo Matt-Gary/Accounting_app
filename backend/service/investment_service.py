@@ -1,7 +1,22 @@
+import time
 import yfinance as yf
 from service.database import get_pg
 
+_portfolio_cache: dict = {}
+_PORTFOLIO_CACHE_TTL = 300  # 5 minutes
+
+def _invalidate_portfolio_cache(user_id, family_id=None):
+    key = str(family_id) if family_id else str(user_id)
+    _portfolio_cache.pop(key, None)
+
 def fetch_portfolio(user_id, family_id=None):
+    cache_key = str(family_id) if family_id else str(user_id)
+    now = time.time()
+    cached = _portfolio_cache.get(cache_key)
+    if cached and (now - cached['ts']) < _PORTFOLIO_CACHE_TTL:
+        print(f"[CACHE HIT] fetch_portfolio key={cache_key}")
+        return cached['data']
+
     client = get_pg()
 
     # 1. Fetch investments from DB — prefer family_id scope, fall back to user_id
@@ -142,7 +157,7 @@ def fetch_portfolio(user_id, family_id=None):
         total_val_brl += val_brl
         enriched_investments.append(inv)
         
-    return {
+    result = {
         "total_value_usd": total_val_usd,
         "total_value_brl": total_val_brl,
         "exchange_rate_usd_brl": usd_to_brl,
@@ -150,8 +165,11 @@ def fetch_portfolio(user_id, family_id=None):
         "exchange_rate_usd_pln": usd_to_pln,
         "investments": enriched_investments
     }
+    _portfolio_cache[cache_key] = {'data': result, 'ts': time.time()}
+    return result
 
 def add_investment(user_id, data, family_id=None):
+    _invalidate_portfolio_cache(user_id, family_id)
     client = get_pg()
     payload = {
         "user_id": user_id,
@@ -168,12 +186,14 @@ def add_investment(user_id, data, family_id=None):
     return res.data
 
 def update_investment(inv_id, user_id, data):
+    _invalidate_portfolio_cache(user_id)
     client = get_pg()
     # Security check: policy handles it, but good to be explicit
     res = client.from_("investments").update(data).eq("id", inv_id).eq("user_id", user_id).execute()
     return res.data
 
 def delete_investment(inv_id, user_id):
+    _invalidate_portfolio_cache(user_id)
     client = get_pg()
     res = client.from_("investments").delete().eq("id", inv_id).eq("user_id", user_id).execute()
     return res.data

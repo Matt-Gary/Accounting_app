@@ -44,8 +44,9 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
           _categories = familyData.categories;
           _paymentMethods = familyData.paymentMethods;
           if (_users.isNotEmpty) _selectedUser = _users.first;
-          if (_paymentMethods.isNotEmpty)
+          if (_paymentMethods.isNotEmpty) {
             _selectedPaymentMethod = _paymentMethods.first;
+          }
         });
       }
     } catch (e) {
@@ -215,8 +216,9 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                 hintText: '0.00',
                               ),
                               validator: (value) {
-                                if (value == null || value.isEmpty)
+                                if (value == null || value.isEmpty) {
                                   return 'Required';
+                                }
                                 return null;
                               },
                             ),
@@ -341,7 +343,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: DropdownButtonFormField<T>(
-        value: value,
+        initialValue: value,
         decoration: InputDecoration(
           labelText: label,
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),

@@ -418,7 +418,7 @@ def edit_investment(inv_id):
     data = request.json
     try:
         # Filter allowed fields
-        allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type']
+        allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type', 'currency']
         updates = {k: v for k, v in data.items() if k in allowed}
 
         res = update_investment(inv_id, g.profile_id, updates)
@@ -751,9 +751,11 @@ def update_recurring(rid):
         client = get_pg()
         # Specific updates like 'active', 'amount', etc.
         # Chain .select() to ensure we get the updated record back
-        client.from_("recurring_expenses").update(data).eq("id", rid).execute()
+        read_only = {'id', 'created_at', 'family_id'}
+        update_payload = {k: v for k, v in data.items() if k not in read_only}
+        client.from_("recurring_expenses").update(update_payload).eq("id", rid).eq("family_id", g.family_id).execute()
         # Fetch the updated record separately since .select() after .eq() is not supported
-        updated_res = client.from_("recurring_expenses").select("*").eq("id", rid).execute()
+        updated_res = client.from_("recurring_expenses").select("*").eq("id", rid).eq("family_id", g.family_id).execute()
         updated_recurring = updated_res.data[0] if updated_res.data else None
         
         print(f"[DEBUG] UPDATED RECURRING RESULT: {updated_recurring}")
@@ -762,8 +764,8 @@ def update_recurring(rid):
             # Propagate changes to future expenses only (from start of next month)
             from dateutil.relativedelta import relativedelta
             today = date.today()
-            first_of_next_month = date(today.year, today.month, 1) + relativedelta(months=1)
-            print(f"[DEBUG] Propagating changes from {first_of_next_month}")
+            cutoff_date = date(today.year, today.month, 1)
+            print(f"[DEBUG] Propagating changes from {cutoff_date}")
 
             # Build update payload for expenses
             expense_updates = {}
@@ -785,17 +787,16 @@ def update_recurring(rid):
                  target_check = client.from_("expenses")\
                      .select("id, spent_at")\
                      .eq("recurring_id", rid)\
-                     .gte("spent_at", first_of_next_month.isoformat())\
+                     .gte("spent_at", cutoff_date.isoformat())\
                      .execute()
                  print(f"[DEBUG] Target expenses found: {len(target_check.data) if target_check.data else 0}")
 
-                 update_res = client.from_("expenses")\
+                 client.from_("expenses")\
                      .update(expense_updates)\
                      .eq("recurring_id", rid)\
-                     .gte("spent_at", first_of_next_month.isoformat())\
-                     .select("id")\
+                     .gte("spent_at", cutoff_date.isoformat())\
                      .execute()
-                 print(f"[DEBUG] Expenses update executed. Updated count: {len(update_res.data) if update_res.data else 0}")
+                 print(f"[DEBUG] Expenses update executed.")
 
             # If day_of_month changed, update spent_at of future materialized expenses
             if 'day_of_month' in data:
@@ -804,7 +805,7 @@ def update_recurring(rid):
                 future_expenses = client.from_("expenses")\
                     .select("id, spent_at")\
                     .eq("recurring_id", rid)\
-                    .gte("spent_at", first_of_next_month.isoformat())\
+                    .gte("spent_at", cutoff_date.isoformat())\
                     .execute().data or []
 
                 print(f"[DEBUG] Updating spent_at for {len(future_expenses)} expenses to day {new_day}")

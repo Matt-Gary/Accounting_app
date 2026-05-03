@@ -133,7 +133,7 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<String>(
-                      value: _selectedType,
+                      initialValue: _selectedType,
                       decoration: const InputDecoration(
                           labelText: 'Type', border: OutlineInputBorder()),
                       items: _types
@@ -146,7 +146,7 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                   const SizedBox(width: 16),
                   Expanded(
                     child: DropdownButtonFormField<String>(
-                      value: _selectedCurrency,
+                      initialValue: _selectedCurrency,
                       decoration: const InputDecoration(
                           labelText: 'Currency', border: OutlineInputBorder()),
                       items: _currencies
@@ -181,8 +181,9 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                 ),
                 validator: (v) {
                   if (_selectedType == 'stock' || _selectedType == 'crypto') {
-                    if (v == null || v.isEmpty)
+                    if (v == null || v.isEmpty) {
                       return 'Required for Stocks/Crypto';
+                    }
                   }
                   return null;
                 },
