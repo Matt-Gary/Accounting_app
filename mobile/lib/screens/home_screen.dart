@@ -175,23 +175,36 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadDashboard() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = '';
-    });
+    final hasCached = BackendService.hasDashboardCache(
+        _currentDate.month, _currentDate.year);
+
+    if (!hasCached) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = '';
+      });
+    }
 
     try {
       final data = await _backendService.getDashboard(
         month: _currentDate.month,
         year: _currentDate.year,
         closingDay: _closingDay,
+        onRefresh: (refreshed) {
+          if (mounted) setState(() => _dashboardData = refreshed);
+        },
       );
-      setState(() => _dashboardData = data);
+      if (mounted) setState(() => _dashboardData = data);
     } catch (e) {
-      setState(() => _errorMessage = e.toString());
+      if (mounted) setState(() => _errorMessage = e.toString());
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _reloadAfterMutation() {
+    BackendService.clearDashboardCache();
+    return _loadDashboard();
   }
 
   void _changeMonth(int months) {
@@ -269,7 +282,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             _closingDay = day;
                           });
                           if (ctx.mounted) Navigator.pop(ctx);
-                          _loadDashboard();
+                          _reloadAfterMutation();
                         } catch (e) {
                           if (ctx.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -293,7 +306,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       _closingDay = null; // Reset to default
                     });
                     if (ctx.mounted) Navigator.pop(ctx);
-                    _loadDashboard();
+                    _reloadAfterMutation();
                   } catch (e) {
                     if (ctx.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -395,7 +408,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Expense deleted successfully')),
           );
-          _loadDashboard();
+          _reloadAfterMutation();
         }
       } catch (e) {
         if (mounted) {
@@ -681,7 +694,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ExpenseDetailsScreen(expense: exp)),
                         );
                         if (result == true) {
-                          _loadDashboard(); // Reload if expense was deleted
+                          _reloadAfterMutation(); // Reload if expense was deleted
                         }
                       },
                       onLongPress: () => _deleteExpense(exp),
@@ -755,7 +768,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     context,
                     MaterialPageRoute(builder: (_) => const AddExpenseScreen()),
                   );
-                  _loadDashboard();
+                  _reloadAfterMutation();
                 },
               ),
               ListTile(
@@ -767,7 +780,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     context,
                     MaterialPageRoute(builder: (_) => const AddEarningScreen()),
                   );
-                  _loadDashboard();
+                  _reloadAfterMutation();
                 },
               ),
               ListTile(
@@ -780,7 +793,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     MaterialPageRoute(
                         builder: (_) => const RecurringExpensesScreen()),
                   );
-                  _loadDashboard();
+                  _reloadAfterMutation();
                 },
               ),
             ],

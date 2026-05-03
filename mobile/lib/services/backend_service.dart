@@ -36,28 +36,62 @@ class BackendService {
     return fn(_authHeaders(json: json));
   }
 
-  Future<DashboardData> getDashboard(
-      {required int month,
-      required int year,
-      String? userId,
-      int? closingDay}) async {
-    final queryParams = {
-      'month': month.toString(),
-      'year': year.toString(),
-      if (userId != null) 'user_id': userId,
-      if (closingDay != null) 'closing_day': closingDay.toString(),
-    };
+  static final Map<String, DashboardData> _dashboardCache = {};
+  static final Map<String, DateTime> _dashboardCacheTime = {};
+  static const _dashboardHardTtl = Duration(minutes: 2);
 
-    final uri =
-        Uri.parse('$baseUrl/dashboard').replace(queryParameters: queryParams);
+  static bool hasDashboardCache(int month, int year) =>
+      _dashboardCache.containsKey('${month}_$year');
 
-    final response = await _withAuth((h) => http.get(uri, headers: h));
+  static void clearDashboardCache() {
+    _dashboardCache.clear();
+    _dashboardCacheTime.clear();
+  }
 
-    if (response.statusCode == 200) {
-      return DashboardData.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception('Failed to load dashboard: ${response.body}');
+  Future<DashboardData> getDashboard({
+    required int month,
+    required int year,
+    String? userId,
+    int? closingDay,
+    void Function(DashboardData)? onRefresh,
+  }) async {
+    final cacheKey = '${month}_${year}_${closingDay ?? 0}';
+    final cached = _dashboardCache[cacheKey];
+    final cacheTime = _dashboardCacheTime[cacheKey];
+    final now = DateTime.now();
+
+    Future<DashboardData> fetchFresh() async {
+      final queryParams = {
+        'month': month.toString(),
+        'year': year.toString(),
+        if (userId != null) 'user_id': userId,
+        if (closingDay != null) 'closing_day': closingDay.toString(),
+      };
+      final uri =
+          Uri.parse('$baseUrl/dashboard').replace(queryParameters: queryParams);
+      final response = await _withAuth((h) => http.get(uri, headers: h));
+      if (response.statusCode == 200) {
+        final data = DashboardData.fromJson(jsonDecode(response.body));
+        _dashboardCache[cacheKey] = data;
+        _dashboardCacheTime[cacheKey] = DateTime.now();
+        return data;
+      } else {
+        throw Exception('Failed to load dashboard: ${response.body}');
+      }
     }
+
+    if (cached != null && cacheTime != null) {
+      final age = now.difference(cacheTime);
+      if (age < _dashboardHardTtl) {
+        return cached;
+      }
+      if (onRefresh != null) {
+        fetchFresh().then(onRefresh).catchError((_) {});
+      }
+      return cached;
+    }
+
+    return fetchFresh();
   }
 
   Future<void> downloadReport(int month, int year) async {

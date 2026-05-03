@@ -47,9 +47,20 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
     });
 
     try {
-      final data = await _backendService.getInvestments();
-      setState(() => _portfolio = data);
-      _loadDistribution();
+      List<String>? typesFilter;
+      if (_chartTypeFilter != 'All') {
+        typesFilter = [_chartTypeFilter.toLowerCase()];
+      }
+
+      final results = await Future.wait([
+        _backendService.getInvestments(),
+        _backendService.getPortfolioDistribution(investmentTypes: typesFilter),
+      ]);
+
+      setState(() {
+        _portfolio = results[0] as PortfolioData;
+        _distribution = results[1] as PortfolioDistribution;
+      });
     } catch (e) {
       setState(() => _errorMessage = e.toString());
     } finally {
