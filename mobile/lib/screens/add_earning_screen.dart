@@ -4,7 +4,7 @@ import '../models/models.dart';
 import '../services/backend_service.dart';
 
 class AddEarningScreen extends StatefulWidget {
-  const AddEarningScreen({Key? key}) : super(key: key);
+  const AddEarningScreen({super.key});
 
   @override
   _AddEarningScreenState createState() => _AddEarningScreenState();
@@ -142,7 +142,7 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
                         Padding(
                           padding: const EdgeInsets.only(bottom: 16),
                           child: DropdownButtonFormField<UserProfile>(
-                            value: _selectedUser,
+                            initialValue: _selectedUser,
                             decoration: InputDecoration(
                               labelText: 'User',
                               border: OutlineInputBorder(

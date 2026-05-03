@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -57,35 +58,56 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
-  late final Stream<AuthState> _authStream;
+  late final StreamSubscription<AuthState> _authSub;
+  Session? _session;
+  bool _refreshing = false;
 
   @override
   void initState() {
     super.initState();
-    _authStream = Supabase.instance.client.auth.onAuthStateChange;
+    _session = Supabase.instance.client.auth.currentSession;
+
+    _authSub =
+        Supabase.instance.client.auth.onAuthStateChange.listen((state) async {
+      if (state.event == AuthChangeEvent.signedOut) {
+        final prefs = await SharedPreferences.getInstance();
+        final rememberMe = prefs.getBool('remember_me') ?? true;
+
+        if (rememberMe) {
+          if (mounted) setState(() => _refreshing = true);
+          try {
+            final refreshed =
+                await Supabase.instance.client.auth.refreshSession();
+            if (mounted) {
+              setState(() {
+                _session = refreshed.session;
+                _refreshing = false;
+              });
+            }
+            return;
+          } catch (_) {
+            // Refresh token expired — fall through to login screen
+          }
+          if (mounted) setState(() => _refreshing = false);
+        }
+      }
+
+      if (mounted) setState(() => _session = state.session);
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSub.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<AuthState>(
-      stream: _authStream,
-      builder: (context, snapshot) {
-        // Use currentSession as immediate fallback before the stream emits
-        final session = snapshot.data?.session ??
-            Supabase.instance.client.auth.currentSession;
-
-        if (snapshot.connectionState == ConnectionState.waiting &&
-            session == null) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-
-        if (session != null) {
-          return const MainScreen();
-        }
-        return const LoginScreen();
-      },
-    );
+    if (_refreshing) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (_session != null) return const MainScreen();
+    return const LoginScreen();
   }
 }

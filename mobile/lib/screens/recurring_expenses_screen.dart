@@ -129,10 +129,10 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                         .name;
                     return ListTile(
                       leading: CircleAvatar(
-                        child: Text(item.dayOfMonth.toString()),
                         backgroundColor:
                             item.active ? Colors.blue : Colors.grey,
                         foregroundColor: Colors.white,
+                        child: Text(item.dayOfMonth.toString()),
                       ),
                       title: Text(item.description ?? cat),
                       subtitle:
@@ -210,10 +210,12 @@ class _RecurringFormState extends State<RecurringForm> {
   void initState() {
     super.initState();
     if (widget.users.isNotEmpty) _selectedUser = widget.users.first;
-    if (widget.categories.isNotEmpty)
+    if (widget.categories.isNotEmpty) {
       _selectedCategory = widget.categories.first;
-    if (widget.paymentMethods.isNotEmpty)
+    }
+    if (widget.paymentMethods.isNotEmpty) {
       _selectedPaymentMethod = widget.paymentMethods.first;
+    }
 
     if (widget.expense != null) {
       _amountController.text = widget.expense!.amount.toString();
@@ -322,7 +324,7 @@ class _RecurringFormState extends State<RecurringForm> {
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<UserProfile>(
-              value: _selectedUser,
+              initialValue: _selectedUser,
               decoration: const InputDecoration(labelText: 'User'),
               items: widget.users
                   .map((u) => DropdownMenuItem(value: u, child: Text(u.name)))
@@ -331,7 +333,7 @@ class _RecurringFormState extends State<RecurringForm> {
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<Category>(
-              value: _selectedCategory,
+              initialValue: _selectedCategory,
               decoration: const InputDecoration(labelText: 'Category'),
               items: widget.categories
                   .map((c) => DropdownMenuItem(value: c, child: Text(c.label)))
@@ -340,7 +342,7 @@ class _RecurringFormState extends State<RecurringForm> {
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<PaymentMethod>(
-              value: _selectedPaymentMethod,
+              initialValue: _selectedPaymentMethod,
               decoration: const InputDecoration(labelText: 'Payment Method'),
               items: widget.paymentMethods
                   .map((p) => DropdownMenuItem(value: p, child: Text(p.name)))
