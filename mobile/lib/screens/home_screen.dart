@@ -17,10 +17,10 @@ class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<HomeScreen> createState() => HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class HomeScreenState extends State<HomeScreen> {
   final _backendService = BackendService();
 
   DateTime _currentDate = DateTime.now();
@@ -28,6 +28,7 @@ class _HomeScreenState extends State<HomeScreen> {
   DashboardData? _dashboardData;
   String _errorMessage = '';
   String? _selectedCategory;
+  String? _selectedUser;
   int? _closingDay;
   bool _showUserChart = true;
   bool _showCategoryChart = true;
@@ -175,8 +176,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadDashboard() async {
-    final hasCached = BackendService.hasDashboardCache(
-        _currentDate.month, _currentDate.year);
+    final hasCached =
+        BackendService.hasDashboardCache(_currentDate.month, _currentDate.year);
 
     if (!hasCached) {
       setState(() {
@@ -228,20 +229,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<dynamic> _getFilteredExpenses() {
     if (_dashboardData == null) return [];
-    final filtered = _selectedCategory == null
-        ? List.from(_dashboardData!.expenses)
-        : _dashboardData!.expenses
-            .where((e) => e['category_label'] == _selectedCategory)
-            .toList();
-
-    // Sort by date descending
-    filtered.sort((a, b) {
-      final dateA = DateTime.parse(a['spent_at']);
-      final dateB = DateTime.parse(b['spent_at']);
-      return dateB.compareTo(dateA);
-    });
-
-    return filtered;
+    Iterable<dynamic> filtered = _dashboardData!.expenses;
+    if (_selectedCategory != null) {
+      filtered =
+          filtered.where((e) => e['category_label'] == _selectedCategory);
+    }
+    if (_selectedUser != null) {
+      filtered = filtered.where((e) => e['user_name'] == _selectedUser);
+    }
+    final list = filtered.toList()
+      ..sort((a, b) {
+        final dateA = DateTime.parse(a['spent_at']);
+        final dateB = DateTime.parse(b['spent_at']);
+        return dateB.compareTo(dateA);
+      });
+    return list;
   }
 
   void _showClosingDayPicker() {
@@ -674,62 +676,100 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 10),
 
+              if (_selectedUser != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: InputChip(
+                      avatar: const Icon(Icons.person, size: 16),
+                      label: Text('Filtered by: $_selectedUser'),
+                      onDeleted: () => setState(() => _selectedUser = null),
+                      deleteIcon: const Icon(Icons.close, size: 16),
+                    ),
+                  ),
+                ),
+
               ListView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 itemCount: _getFilteredExpenses().length,
                 itemBuilder: (context, index) {
                   final exp = _getFilteredExpenses()[index];
+                  final isRecurring = exp['recurring_id'] != null;
+                  const recurringColor = Color(0xFFE65100);
                   return Card(
                     elevation: 0,
                     margin: const EdgeInsets.only(bottom: 8),
+                    clipBehavior: Clip.antiAlias,
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
-                    child: ListTile(
-                      onTap: () async {
-                        final result = await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) =>
-                                  ExpenseDetailsScreen(expense: exp)),
-                        );
-                        if (result == true) {
-                          _reloadAfterMutation(); // Reload if expense was deleted
-                        }
-                      },
-                      onLongPress: () => _deleteExpense(exp),
-                      leading: CircleAvatar(
-                        backgroundColor: Colors.blue[50],
-                        child: Text(exp['category_label'][0]),
-                      ),
-                      title: Text(exp['category_label']),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                              '${exp['user_name']} • ${exp['payment_method_name']}'),
-                          if (exp['comment'] != null &&
-                              exp['comment'].isNotEmpty)
-                            Text('"${exp['comment']}"',
-                                style: const TextStyle(
-                                    fontStyle: FontStyle.italic, fontSize: 12)),
-                        ],
-                      ),
-                      trailing: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            DateFormat('dd/MM')
-                                .format(DateTime.parse(exp['spent_at'])),
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.grey),
-                          ),
-                          Text(
-                            'R\$ ${(exp['amount'] as num).toDouble().toStringAsFixed(2)}',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ],
+                    child: Container(
+                      decoration: isRecurring
+                          ? const BoxDecoration(
+                              border: Border(
+                                left:
+                                    BorderSide(color: recurringColor, width: 4),
+                              ),
+                            )
+                          : null,
+                      child: ListTile(
+                        onTap: () async {
+                          final result = await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) =>
+                                    ExpenseDetailsScreen(expense: exp)),
+                          );
+                          if (result == true) {
+                            _reloadAfterMutation(); // Reload if expense was deleted
+                          }
+                        },
+                        onLongPress: () => _deleteExpense(exp),
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.blue[50],
+                          child: Text(exp['category_label'][0]),
+                        ),
+                        title: Row(
+                          children: [
+                            Flexible(child: Text(exp['category_label'])),
+                            if (isRecurring) ...[
+                              const SizedBox(width: 6),
+                              const Icon(Icons.repeat,
+                                  size: 14, color: recurringColor),
+                            ],
+                          ],
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                                '${exp['user_name']} • ${exp['payment_method_name']}'),
+                            if (exp['comment'] != null &&
+                                exp['comment'].isNotEmpty)
+                              Text('"${exp['comment']}"',
+                                  style: const TextStyle(
+                                      fontStyle: FontStyle.italic,
+                                      fontSize: 12)),
+                          ],
+                        ),
+                        trailing: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              DateFormat('dd/MM')
+                                  .format(DateTime.parse(exp['spent_at'])),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.grey),
+                            ),
+                            Text(
+                              'R\$ ${(exp['amount'] as num).toDouble().toStringAsFixed(2)}',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   );
@@ -739,15 +779,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showAddOptions(context),
-        child: const Icon(Icons.add, color: Colors.white),
-        backgroundColor: Colors.black,
-      ),
     );
   }
 
-  void _showAddOptions(BuildContext context) {
+  void showAddOptions() {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -979,64 +1014,81 @@ class _HomeScreenState extends State<HomeScreen> {
             ...entries.asMap().entries.map((e) {
               final color = _personColors[e.key % _personColors.length];
               final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.12),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Center(
-                        child: Text(
-                          e.value.key[0].toUpperCase(),
-                          style: TextStyle(
-                            color: color,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
+              final userName = e.value.key;
+              final isSelected = _selectedUser == userName;
+              return InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => setState(() {
+                  _selectedUser = isSelected ? null : userName;
+                }),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                  decoration: isSelected
+                      ? BoxDecoration(
+                          color: color.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(8),
+                        )
+                      : null,
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: color.withValues(alpha: 0.12),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Center(
+                          child: Text(
+                            userName[0].toUpperCase(),
+                            style: TextStyle(
+                              color: color,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              userName,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 2),
+                            LinearProgressIndicator(
+                              value: total > 0 ? e.value.value / total : 0,
+                              backgroundColor: Colors.grey[200],
+                              color: color,
+                              minHeight: 4,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           Text(
-                            e.value.key,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
+                            'R\$ ${e.value.value.toStringAsFixed(2)}',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
-                          const SizedBox(height: 2),
-                          LinearProgressIndicator(
-                            value: total > 0 ? e.value.value / total : 0,
-                            backgroundColor: Colors.grey[200],
-                            color: color,
-                            minHeight: 4,
-                            borderRadius: BorderRadius.circular(2),
+                          Text(
+                            '${pct.toStringAsFixed(1)}%',
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.grey),
                           ),
                         ],
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          'R\$ ${e.value.value.toStringAsFixed(2)}',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        Text(
-                          '${pct.toStringAsFixed(1)}%',
-                          style:
-                              const TextStyle(fontSize: 11, color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               );
             }),

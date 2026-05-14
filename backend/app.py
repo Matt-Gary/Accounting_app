@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from flask import Flask, request, jsonify, send_file, g
 from flask_cors import CORS
 from service.database import get_pg
@@ -421,7 +422,7 @@ def edit_investment(inv_id):
         allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type', 'currency']
         updates = {k: v for k, v in data.items() if k in allowed}
 
-        res = update_investment(inv_id, g.profile_id, updates)
+        res = update_investment(inv_id, g.profile_id, updates, family_id=g.family_id)
         return jsonify(res)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

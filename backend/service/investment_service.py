@@ -1,4 +1,5 @@
 import time
+# pyrefly: ignore [missing-import]
 import yfinance as yf
 from service.database import get_pg
 
@@ -185,11 +186,17 @@ def add_investment(user_id, data, family_id=None):
     res = client.from_("investments").insert(payload).execute()
     return res.data
 
-def update_investment(inv_id, user_id, data):
-    _invalidate_portfolio_cache(user_id)
+def update_investment(inv_id, user_id, data, family_id=None):
+    _invalidate_portfolio_cache(user_id, family_id)
     client = get_pg()
-    # Security check: policy handles it, but good to be explicit
-    res = client.from_("investments").update(data).eq("id", inv_id).eq("user_id", user_id).execute()
+    # Filter by family_id when available (investments are stored under family scope);
+    # fall back to user_id for legacy / single-user rows.
+    query = client.from_("investments").update(data).eq("id", inv_id)
+    if family_id:
+        query = query.eq("family_id", family_id)
+    else:
+        query = query.eq("user_id", user_id)
+    res = query.execute()
     return res.data
 
 def delete_investment(inv_id, user_id):

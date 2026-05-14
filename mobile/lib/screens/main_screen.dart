@@ -11,11 +11,12 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
+  final GlobalKey<HomeScreenState> _homeKey = GlobalKey<HomeScreenState>();
 
   @override
   Widget build(BuildContext context) {
     final List<Widget> screens = [
-      const HomeScreen(),
+      HomeScreen(key: _homeKey),
       const InvestmentsScreen(),
     ];
 
@@ -26,15 +27,26 @@ class _MainScreenState extends State<MainScreen> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
+        type: BottomNavigationBarType.fixed,
+        onTap: (index) {
+          if (index == 2) {
+            _homeKey.currentState?.showAddOptions();
+          } else {
+            setState(() => _currentIndex = index);
+          }
+        },
         items: const [
           BottomNavigationBarItem(
               icon: Icon(Icons.dashboard), label: 'Dashboard'),
           BottomNavigationBarItem(
               icon: Icon(Icons.trending_up), label: 'Investments'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.add_circle, size: 32, color: Colors.black),
+              label: 'Add'),
         ],
         selectedItemColor: Colors.black,
         unselectedItemColor: Colors.grey,
+        iconSize: 24,
       ),
     );
   }
