@@ -3,7 +3,12 @@ from flask import Flask, request, jsonify, send_file, g
 from flask_cors import CORS
 from service.database import get_pg
 from service.billing_service import get_billing_period, get_query_range_for_month
-from middleware.auth import require_auth
+from middleware.auth import (
+    require_auth,
+    require_super_admin,
+    get_supabase,
+    SUPER_ADMIN_PROFILE_ID,
+)
 import pandas as pd
 import io
 import os
@@ -137,6 +142,8 @@ def materialize_recurring_expenses(month, year, user_id):
                 "recurring_id": rid,
                 "comment": f"Recurring: {rdef['description'] or ''}".strip()
             }
+            if rdef.get('family_id'):
+                new_exp['family_id'] = rdef['family_id']
             try:
                 client.from_("expenses").insert(new_exp).execute()
             except Exception as e:
@@ -736,6 +743,8 @@ def create_recurring():
     # Use profile_id from auth, allow override for family member
     if 'user_id' not in data:
         data['user_id'] = g.profile_id
+    if g.family_id:
+        data['family_id'] = g.family_id
     try:
         client = get_pg()
         res = client.from_("recurring_expenses").insert(data).execute()
@@ -1116,54 +1125,309 @@ def delete_closing_day_override():
 
 # ============= AUTH / ONBOARDING =============
 
+# Avoids visually-ambiguous characters (no 0/O, 1/I/L).
+_INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_INVITE_CODE_LENGTH = 8
+_INVITE_TTL_DAYS = 7
+
+
+def _generate_invite_code() -> str:
+    import secrets
+    return ''.join(secrets.choice(_INVITE_CODE_ALPHABET) for _ in range(_INVITE_CODE_LENGTH))
+
+
+def _pg_error_code(exc) -> str:
+    # supabase-py / postgrest-py raises APIError with .code holding the SQLSTATE.
+    return str(getattr(exc, 'code', '') or '')
+
+
+def _pg_error_message(exc) -> str:
+    return str(getattr(exc, 'message', '') or str(exc))
+
+
 @app.route('/auth/onboard', methods=['POST'])
 @require_auth
 def onboard_user():
     """
-    Called after signup to create profile, family, and seed default data.
-    Expects: { "display_name": "...", "family_name": "..." }
+    Atomic onboarding via the onboard_new_user RPC. Caller provides either
+    family_name (create a new family) or invite_code (join an existing one).
+    Body: { "display_name": str, "family_name"?: str, "invite_code"?: str }
     """
-    data = request.json
-    display_name = data.get('display_name')
-    family_name = data.get('family_name')
+    data = request.json or {}
+    display_name = (data.get('display_name') or '').strip()
+    family_name = (data.get('family_name') or '').strip() or None
+    invite_code = (data.get('invite_code') or '').strip().upper() or None
 
-    if not display_name or not family_name:
-        return jsonify({"error": "display_name and family_name are required"}), 400
+    if not display_name:
+        return jsonify({"error": "display_name is required"}), 400
+    if (family_name is None) == (invite_code is None):
+        return jsonify({"error": "Provide exactly one of family_name or invite_code"}), 400
 
     client = get_pg()
+    try:
+        res = client.rpc("onboard_new_user", {
+            "p_auth_id": g.user_id,
+            "p_email": g.user_email,
+            "p_display_name": display_name,
+            "p_family_name": family_name,
+            "p_invite_code": invite_code,
+        }).execute()
+    except Exception as e:
+        code = _pg_error_code(e)
+        msg = _pg_error_message(e)
+        if code == '23505':
+            return jsonify({"error": "User already onboarded"}), 409
+        if 'invite_not_found' in msg:
+            return jsonify({"error": "invite_not_found"}), 404
+        if 'invite_used' in msg:
+            return jsonify({"error": "invite_used"}), 409
+        if 'invite_expired' in msg:
+            return jsonify({"error": "invite_expired"}), 410
+        if code == '22023':
+            return jsonify({"error": msg or "Invalid onboarding parameters"}), 400
+        print(f"[ERROR] onboard_new_user RPC failed: code={code} msg={msg}")
+        return jsonify({"error": "Onboarding failed"}), 500
 
-    # Check if already onboarded
-    existing = client.from_("profiles").select("id").eq("auth_id", g.user_id).execute()
-    if existing.data:
-        return jsonify({"error": "User already onboarded"}), 409
-
-    # 1. Create profile
-    profile = client.from_("profiles").insert({
-        "name": display_name,
-        "email": g.user_email,
-        "auth_id": g.user_id
-    }).execute().data[0]
-
-    # 2. Create family
-    family = client.from_("families").insert({
-        "name": family_name,
-        "owner_id": g.user_id,
-    }).execute().data[0]
-
-    # 3. Create family membership
-    client.from_("family_members").insert({
-        "family_id": family['id'],
-        "user_id": g.user_id,
-        "role": "owner",
-        "display_name": display_name
-    }).execute()
-
-    # 4. Payment methods are global (family_id IS NULL in DB) — no seeding needed per family.
-
+    row = (res.data or [{}])[0]
     return jsonify({
-        "profile_id": profile['id'],
-        "family_id": family['id']
+        "profile_id": row.get("profile_id"),
+        "family_id": row.get("family_id"),
+        "role": row.get("role"),
     }), 201
+
+
+# ============= FAMILY INVITES =============
+
+@app.route('/family/invites', methods=['POST'])
+@require_auth
+def create_family_invite():
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+
+    from datetime import datetime, timedelta, timezone
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=_INVITE_TTL_DAYS)).isoformat()
+
+    client = get_pg()
+    # Retry once on the (extremely unlikely) PK collision.
+    for _ in range(3):
+        code = _generate_invite_code()
+        try:
+            res = client.from_("family_invites").insert({
+                "code": code,
+                "family_id": g.family_id,
+                "created_by": g.user_id,
+                "expires_at": expires_at,
+            }).execute()
+            row = res.data[0]
+            return jsonify({"code": row["code"], "expires_at": row["expires_at"]}), 201
+        except Exception as e:
+            if _pg_error_code(e) == '23505':
+                continue
+            print(f"[ERROR] create_family_invite failed: {e}")
+            return jsonify({"error": "Failed to create invite"}), 500
+    return jsonify({"error": "Could not allocate a unique invite code"}), 500
+
+
+@app.route('/family/invites', methods=['GET'])
+@require_auth
+def list_family_invites():
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    client = get_pg()
+    res = client.from_("family_invites")\
+        .select("code, created_at, expires_at, used_at, used_by")\
+        .eq("family_id", g.family_id)\
+        .is_("used_at", "null")\
+        .gt("expires_at", now_iso)\
+        .order("created_at", desc=True)\
+        .execute()
+    return jsonify(res.data or []), 200
+
+
+@app.route('/family/invites/<code>', methods=['DELETE'])
+@require_auth
+def revoke_family_invite(code):
+    if not g.family_id:
+        return jsonify({"error": "Family context required"}), 400
+
+    client = get_pg()
+    existing = client.from_("family_invites")\
+        .select("code, family_id, used_at")\
+        .eq("code", code.upper())\
+        .limit(1).execute()
+    if not existing.data:
+        return jsonify({"error": "Invite not found"}), 404
+    inv = existing.data[0]
+    if inv["family_id"] != g.family_id:
+        return jsonify({"error": "Invite not found"}), 404
+    if inv["used_at"] is not None:
+        return jsonify({"error": "Cannot revoke a used invite"}), 409
+
+    client.from_("family_invites").delete().eq("code", code.upper()).execute()
+    return jsonify({"message": "Invite revoked"}), 200
+
+
+# ============= AUTH IDENTITY =============
+
+@app.route('/auth/me', methods=['GET'])
+@require_auth
+def auth_me():
+    """
+    Returns the authenticated caller's identity. Used by the mobile client
+    to decide whether to render the Super Admin tab — never trust this on
+    the client for authorization, only for UI gating. Backend always
+    re-checks via @require_super_admin.
+    """
+    return jsonify({
+        "profile_id": g.profile_id,
+        "user_id": g.user_id,
+        "email": g.user_email,
+        "family_id": g.family_id,
+        "is_super_admin": g.profile_id == SUPER_ADMIN_PROFILE_ID,
+    }), 200
+
+
+# ============= SUPER ADMIN =============
+
+def _purge_auth_user(auth_id):
+    """Best-effort deletion of the Supabase auth.users row. Logged on failure
+    but not surfaced — the DB cascade is the source of truth."""
+    if not auth_id:
+        return
+    try:
+        get_supabase().auth.admin.delete_user(auth_id)
+    except Exception as e:
+        print(f"[WARN] auth.admin.delete_user({auth_id}) failed: {e}")
+
+
+@app.route('/admin/families', methods=['GET'])
+@require_super_admin
+def admin_list_families():
+    """Returns every family with its members. Used by the Super Admin tab."""
+    client = get_pg()
+    families = client.from_("families").select("id, name, created_at, owner_id")\
+        .order("created_at", desc=False).execute().data or []
+    members = client.from_("family_members")\
+        .select("family_id, user_id, role, display_name, created_at")\
+        .execute().data or []
+    profiles = client.from_("profiles").select("id, auth_id, email, name").execute().data or []
+    prof_by_auth = {p["auth_id"]: p for p in profiles}
+
+    result = []
+    for fam in families:
+        fam_members = []
+        for m in members:
+            if m["family_id"] != fam["id"]:
+                continue
+            prof = prof_by_auth.get(m["user_id"]) or {}
+            fam_members.append({
+                "profile_id": prof.get("id"),
+                "auth_id": m["user_id"],
+                "email": prof.get("email"),
+                "name": prof.get("name") or m.get("display_name"),
+                "display_name": m.get("display_name"),
+                "role": m.get("role"),
+                "is_super_admin": prof.get("id") == SUPER_ADMIN_PROFILE_ID,
+            })
+        result.append({
+            "id": fam["id"],
+            "name": fam["name"],
+            "created_at": fam.get("created_at"),
+            "members": fam_members,
+        })
+    return jsonify(result), 200
+
+
+@app.route('/admin/users/<profile_id>', methods=['PUT'])
+@require_super_admin
+def admin_update_user(profile_id):
+    """Edit a user's name and/or email. Mirrors profiles.name to
+    family_members.display_name. Email change also updates auth.users."""
+    data = request.json or {}
+    new_name = (data.get('name') or '').strip() or None
+    new_email = (data.get('email') or '').strip() or None
+    if not new_name and not new_email:
+        return jsonify({"error": "Nothing to update"}), 400
+
+    client = get_pg()
+    prof_res = client.from_("profiles").select("auth_id").eq("id", profile_id).limit(1).execute()
+    if not prof_res.data:
+        return jsonify({"error": "User not found"}), 404
+    auth_id = prof_res.data[0]["auth_id"]
+
+    if new_email:
+        try:
+            get_supabase().auth.admin.update_user_by_id(
+                auth_id, {"email": new_email, "email_confirm": True}
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if "already" in msg or "duplicate" in msg or "exists" in msg:
+                return jsonify({"error": "Email already in use"}), 409
+            print(f"[ERROR] admin_update_user email change failed: {e}")
+            return jsonify({"error": f"Auth email update failed: {e}"}), 500
+
+    updates = {}
+    if new_name: updates["name"] = new_name
+    if new_email: updates["email"] = new_email
+    if updates:
+        client.from_("profiles").update(updates).eq("id", profile_id).execute()
+    if new_name:
+        client.from_("family_members").update({"display_name": new_name})\
+            .eq("user_id", auth_id).execute()
+
+    return jsonify({"profile_id": profile_id, **updates}), 200
+
+
+@app.route('/admin/users/<profile_id>', methods=['DELETE'])
+@require_super_admin
+def admin_delete_user(profile_id):
+    """Cascade-delete a user. Runs the admin_delete_user RPC, then purges
+    the auth.users row."""
+    if profile_id == SUPER_ADMIN_PROFILE_ID:
+        return jsonify({"error": "Cannot delete the super admin"}), 403
+
+    client = get_pg()
+    try:
+        res = client.rpc("admin_delete_user", {"p_profile_id": profile_id}).execute()
+    except Exception as e:
+        if 'user_not_found' in _pg_error_message(e):
+            return jsonify({"error": "User not found"}), 404
+        print(f"[ERROR] admin_delete_user RPC failed: {e}")
+        return jsonify({"error": "Delete failed"}), 500
+
+    row = (res.data or [{}])[0]
+    _purge_auth_user(row.get("auth_id"))
+    return jsonify({"deleted": "user", "profile_id": profile_id}), 200
+
+
+@app.route('/admin/families/<family_id>', methods=['DELETE'])
+@require_super_admin
+def admin_delete_family(family_id):
+    """Cascade-delete a whole family (members + all owned data). Refuses
+    to delete the super admin's own family — they must transfer out first."""
+    if family_id == g.family_id:
+        return jsonify({"error": "Cannot delete your own family"}), 403
+
+    client = get_pg()
+    try:
+        res = client.rpc("admin_delete_family", {"p_family_id": family_id}).execute()
+    except Exception as e:
+        print(f"[ERROR] admin_delete_family RPC failed: {e}")
+        return jsonify({"error": "Delete failed"}), 500
+
+    auth_ids = [r.get("auth_id") for r in (res.data or []) if r.get("auth_id")]
+    for aid in auth_ids:
+        _purge_auth_user(aid)
+    return jsonify({
+        "deleted": "family",
+        "family_id": family_id,
+        "users_deleted": len(auth_ids),
+    }), 200
 
 
 if __name__ == '__main__':

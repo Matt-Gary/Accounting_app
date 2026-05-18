@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/backend_service.dart';
+
+enum _SignupMode { create, join }
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -15,10 +18,12 @@ class _SignupScreenState extends State<SignupScreen> {
   final _confirmPasswordController = TextEditingController();
   final _displayNameController = TextEditingController();
   final _familyNameController = TextEditingController();
+  final _inviteCodeController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   final _backendService = BackendService();
   bool _loading = false;
   bool _obscurePassword = true;
+  _SignupMode _mode = _SignupMode.create;
 
   @override
   void dispose() {
@@ -27,6 +32,7 @@ class _SignupScreenState extends State<SignupScreen> {
     _confirmPasswordController.dispose();
     _displayNameController.dispose();
     _familyNameController.dispose();
+    _inviteCodeController.dispose();
     super.dispose();
   }
 
@@ -36,7 +42,6 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() => _loading = true);
 
     try {
-      // 1. Create auth user — session is returned directly in the response
       final authResponse = await Supabase.instance.client.auth.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text,
@@ -49,14 +54,17 @@ class _SignupScreenState extends State<SignupScreen> {
             'Check if email confirmation is required in Supabase.');
       }
 
-      // 2. Onboard: create profile, family, seed data using the fresh token
       await _backendService.onboardUser(
         displayName: _displayNameController.text.trim(),
-        familyName: _familyNameController.text.trim(),
+        familyName: _mode == _SignupMode.create
+            ? _familyNameController.text.trim()
+            : null,
+        inviteCode: _mode == _SignupMode.join
+            ? _inviteCodeController.text.trim().toUpperCase()
+            : null,
         accessToken: accessToken,
       );
 
-      // Auth state listener in main.dart will handle navigation
       if (!mounted) return;
       Navigator.of(context).popUntil((route) => route.isFirst);
     } on AuthException catch (e) {
@@ -66,10 +74,10 @@ class _SignupScreenState extends State<SignupScreen> {
       );
     } catch (e) {
       if (!mounted) return;
+      final raw = e.toString();
+      final clean = raw.startsWith('Exception: ') ? raw.substring(11) : raw;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('An error occurred: $e'),
-            backgroundColor: Colors.red),
+        SnackBar(content: Text(clean), backgroundColor: Colors.red),
       );
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -93,6 +101,23 @@ class _SignupScreenState extends State<SignupScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              SegmentedButton<_SignupMode>(
+                segments: const [
+                  ButtonSegment(
+                    value: _SignupMode.create,
+                    label: Text('Start new family'),
+                    icon: Icon(Icons.family_restroom),
+                  ),
+                  ButtonSegment(
+                    value: _SignupMode.join,
+                    label: Text('Join with code'),
+                    icon: Icon(Icons.group_add),
+                  ),
+                ],
+                selected: {_mode},
+                onSelectionChanged: (s) => setState(() => _mode = s.first),
+              ),
+              const SizedBox(height: 16),
               TextFormField(
                 controller: _displayNameController,
                 decoration: const InputDecoration(
@@ -106,20 +131,44 @@ class _SignupScreenState extends State<SignupScreen> {
                     v == null || v.trim().isEmpty ? 'Name is required' : null,
               ),
               const SizedBox(height: 16),
-              TextFormField(
-                controller: _familyNameController,
-                decoration: const InputDecoration(
-                  labelText: 'Family Name',
-                  hintText: 'e.g. The Smith Family',
-                  prefixIcon: Icon(Icons.family_restroom),
-                  border: OutlineInputBorder(),
-                  filled: true,
-                  fillColor: Colors.white,
+              if (_mode == _SignupMode.create)
+                TextFormField(
+                  controller: _familyNameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Family Name',
+                    hintText: 'e.g. The Smith Family',
+                    prefixIcon: Icon(Icons.family_restroom),
+                    border: OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                  validator: (v) => v == null || v.trim().isEmpty
+                      ? 'Family name is required'
+                      : null,
+                )
+              else
+                TextFormField(
+                  controller: _inviteCodeController,
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: [
+                    UpperCaseTextFormatter(),
+                    LengthLimitingTextInputFormatter(8),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Invite Code',
+                    hintText: '8-character code from a family member',
+                    prefixIcon: Icon(Icons.vpn_key_outlined),
+                    border: OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                  validator: (v) {
+                    final t = v?.trim() ?? '';
+                    if (t.isEmpty) return 'Invite code is required';
+                    if (t.length != 8) return 'Code must be 8 characters';
+                    return null;
+                  },
                 ),
-                validator: (v) => v == null || v.trim().isEmpty
-                    ? 'Family name is required'
-                    : null,
-              ),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _emailController,
@@ -202,6 +251,17 @@ class _SignupScreenState extends State<SignupScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class UpperCaseTextFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
     );
   }
 }

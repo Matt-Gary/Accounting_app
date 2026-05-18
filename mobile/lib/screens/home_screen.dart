@@ -12,6 +12,7 @@ import 'add_earning_screen.dart';
 import 'expense_details_screen.dart';
 import 'recurring_expenses_screen.dart';
 import 'category_management_screen.dart';
+import 'family_invites_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -444,6 +445,14 @@ class HomeScreenState extends State<HomeScreen> {
               context,
               MaterialPageRoute(
                   builder: (_) => const CategoryManagementScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.group_add_outlined, color: Colors.black),
+            tooltip: 'Family Invites',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const FamilyInvitesScreen()),
             ),
           ),
           IconButton(

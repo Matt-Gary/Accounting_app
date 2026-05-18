@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/main_screen.dart';
 import 'screens/login_screen.dart';
+import 'services/backend_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -69,6 +70,13 @@ class _AuthGateState extends State<AuthGate> {
 
     _authSub =
         Supabase.instance.client.auth.onAuthStateChange.listen((state) async {
+      final previousUserId = _session?.user.id;
+      final newUserId = state.session?.user.id;
+      if (previousUserId != newUserId) {
+        BackendService.clearDashboardCache();
+        BackendService.clearFamilyDataCache();
+      }
+
       if (state.event == AuthChangeEvent.signedOut) {
         final prefs = await SharedPreferences.getInstance();
         final rememberMe = prefs.getBool('remember_me') ?? true;

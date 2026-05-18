@@ -35,26 +35,28 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
     _loadData();
   }
 
+  String? _loadError;
+
   Future<void> _loadData() async {
     try {
-      final familyData = await _backendService.getFamilyData();
-      if (mounted) {
-        setState(() {
-          _users = familyData.profiles;
-          _categories = familyData.categories;
-          _paymentMethods = familyData.paymentMethods;
-          if (_users.isNotEmpty) _selectedUser = _users.first;
-          if (_paymentMethods.isNotEmpty) {
-            _selectedPaymentMethod = _paymentMethods.first;
-          }
-        });
-      }
+      final familyData =
+          await _backendService.getFamilyData(forceRefresh: true);
+      if (!mounted) return;
+      setState(() {
+        _users = familyData.profiles;
+        _categories = familyData.categories;
+        _paymentMethods = familyData.paymentMethods;
+        if (_users.isNotEmpty) _selectedUser = _users.first;
+        if (_paymentMethods.isNotEmpty) {
+          _selectedPaymentMethod = _paymentMethods.first;
+        }
+        _loadError = _users.isEmpty
+            ? 'No users found for this family. Try signing out and back in.'
+            : null;
+      });
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading data: $e')),
-        );
-      }
+      if (!mounted) return;
+      setState(() => _loadError = 'Failed to load form data: $e');
     }
   }
 
@@ -121,8 +123,8 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
               isLast ? lastInstallmentAmount : installmentAmount;
           final installmentDate = i == 0
               ? firstInstallmentDate
-              : DateTime(firstBillingMonth.year,
-                  firstBillingMonth.month + i, 1);
+              : DateTime(
+                  firstBillingMonth.year, firstBillingMonth.month + i, 1);
 
           final commentSuffix = "(${i + 1}/$installments)";
           final finalComment = baseComment.isEmpty
@@ -140,7 +142,8 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
           ));
         }
 
-        await _backendService.addExpenses(expenses.map((e) => e.toJson()).toList());
+        await _backendService
+            .addExpenses(expenses.map((e) => e.toJson()).toList());
       } else {
         final expense = Expense(
           userId: _selectedUser!.id,
@@ -183,7 +186,28 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         iconTheme: const IconThemeData(color: Colors.black),
       ),
       body: _users.isEmpty
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(
+              child: _loadError == null
+                  ? const CircularProgressIndicator()
+                  : Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(_loadError!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.red)),
+                          const SizedBox(height: 16),
+                          ElevatedButton(
+                              onPressed: () {
+                                setState(() => _loadError = null);
+                                _loadData();
+                              },
+                              child: const Text('Retry')),
+                        ],
+                      ),
+                    ),
+            )
           : SingleChildScrollView(
               padding: const EdgeInsets.all(20),
               child: Form(
