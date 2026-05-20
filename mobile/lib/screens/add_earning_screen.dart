@@ -30,10 +30,11 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
 
   Future<void> _loadData() async {
     try {
-      final familyData = await _backendService.getFamilyData();
+      final familyData =
+          await _backendService.getFamilyData(forceRefresh: true);
       if (mounted) {
         setState(() {
-          _users = familyData.profiles;
+          _users = familyData.profiles.where((u) => !u.isVirtual).toList();
           if (_users.isNotEmpty) _selectedUser = _users.first;
         });
       }

@@ -35,27 +35,59 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
     _loadData();
   }
 
+  String? _loadError;
+
   Future<void> _loadData() async {
     try {
-      final familyData = await _backendService.getFamilyData();
-      if (mounted) {
-        setState(() {
-          _users = familyData.profiles;
-          _categories = familyData.categories;
-          _paymentMethods = familyData.paymentMethods;
-          if (_users.isNotEmpty) _selectedUser = _users.first;
-          if (_paymentMethods.isNotEmpty) {
-            _selectedPaymentMethod = _paymentMethods.first;
-          }
-        });
-      }
+      final familyData =
+          await _backendService.getFamilyData(forceRefresh: true);
+      if (!mounted) return;
+      setState(() {
+        _users = familyData.profiles;
+        _categories = familyData.categories;
+        _paymentMethods = familyData.paymentMethods;
+        if (_users.isNotEmpty) _selectedUser = _users.first;
+        if (_paymentMethods.isNotEmpty) {
+          _selectedPaymentMethod = _paymentMethods.first;
+        }
+        _loadError = _users.isEmpty
+            ? 'No users found for this family. Try signing out and back in.'
+            : null;
+      });
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading data: $e')),
-        );
-      }
+      if (!mounted) return;
+      setState(() => _loadError = 'Failed to load form data: $e');
     }
+  }
+
+  Future<bool?> _askInstallmentStartMonth(int installments) {
+    final thisMonthLabel = DateFormat('MMMM yyyy').format(_spentAt);
+    final nextMonthLabel = DateFormat('MMMM yyyy')
+        .format(DateTime(_spentAt.year, _spentAt.month + 1, 1));
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('First installment month'),
+        content: Text(
+          'When should installment 1 of $installments be billed?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Next month ($nextMonthLabel)'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('This month ($thisMonthLabel)'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _submit() async {
@@ -69,8 +101,6 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
       return;
     }
 
-    setState(() => _isLoading = true);
-
     try {
       final amount = double.parse(_amountController.text.replaceAll(',', '.'));
       final installmentsStr = _installmentsController.text.trim();
@@ -80,6 +110,17 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
       final baseComment = _commentController.text.trim();
 
       if (installments > 1) {
+        // Credit cards: ask the user which bill installment 1 belongs to.
+        // Cash/Pix have no closing-day concept, so keep #1 on spent_at.
+        bool startThisMonth = true;
+        if (_selectedPaymentMethod!.isCreditCard) {
+          final answer = await _askInstallmentStartMonth(installments);
+          if (answer == null) return;
+          startThisMonth = answer;
+        }
+
+        setState(() => _isLoading = true);
+
         final List<Expense> expenses = [];
         // Round to 2 decimal places (e.g. 15 / 4 = 3.75)
         final double installmentAmount =
@@ -89,31 +130,14 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
             (amount - (installmentAmount * (installments - 1)))
                 .toStringAsFixed(2));
 
-        // Resolve the effective closing day for the purchase month so we know
-        // whether the first installment crosses into next month's bill.
-        int effectiveClosingDay = _selectedPaymentMethod!.closingDay ?? 23;
-        if (_selectedPaymentMethod!.isCreditCard) {
-          try {
-            final override = await _backendService.getClosingDayOverride(
-                _spentAt.month, _spentAt.year);
-            if (override != null) effectiveClosingDay = override;
-          } catch (_) {
-            // No override → keep PM default.
-          }
-        }
-
-        // Installment 1 keeps the real purchase date unless the purchase
-        // crosses closing, in which case it moves to the 1st of next month.
         // Installments 2..N always land on the 1st of subsequent months so
         // the billing period is unambiguous regardless of closing-day drift.
-        final bool crossesClosing = _selectedPaymentMethod!.isCreditCard &&
-            _spentAt.day >= effectiveClosingDay;
-        final DateTime firstInstallmentDate = crossesClosing
-            ? DateTime(_spentAt.year, _spentAt.month + 1, 1)
-            : _spentAt;
-        final DateTime firstBillingMonth = crossesClosing
-            ? firstInstallmentDate
-            : DateTime(_spentAt.year, _spentAt.month, 1);
+        final DateTime firstInstallmentDate = startThisMonth
+            ? _spentAt
+            : DateTime(_spentAt.year, _spentAt.month + 1, 1);
+        final DateTime firstBillingMonth = startThisMonth
+            ? DateTime(_spentAt.year, _spentAt.month, 1)
+            : firstInstallmentDate;
 
         for (int i = 0; i < installments; i++) {
           final isLast = i == installments - 1;
@@ -121,8 +145,8 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
               isLast ? lastInstallmentAmount : installmentAmount;
           final installmentDate = i == 0
               ? firstInstallmentDate
-              : DateTime(firstBillingMonth.year,
-                  firstBillingMonth.month + i, 1);
+              : DateTime(
+                  firstBillingMonth.year, firstBillingMonth.month + i, 1);
 
           final commentSuffix = "(${i + 1}/$installments)";
           final finalComment = baseComment.isEmpty
@@ -140,8 +164,11 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
           ));
         }
 
-        await _backendService.addExpenses(expenses.map((e) => e.toJson()).toList());
+        await _backendService
+            .addExpenses(expenses.map((e) => e.toJson()).toList());
       } else {
+        setState(() => _isLoading = true);
+
         final expense = Expense(
           userId: _selectedUser!.id,
           amount: amount,
@@ -183,7 +210,28 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         iconTheme: const IconThemeData(color: Colors.black),
       ),
       body: _users.isEmpty
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(
+              child: _loadError == null
+                  ? const CircularProgressIndicator()
+                  : Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(_loadError!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.red)),
+                          const SizedBox(height: 16),
+                          ElevatedButton(
+                              onPressed: () {
+                                setState(() => _loadError = null);
+                                _loadData();
+                              },
+                              child: const Text('Retry')),
+                        ],
+                      ),
+                    ),
+            )
           : SingleChildScrollView(
               padding: const EdgeInsets.all(20),
               child: Form(

@@ -423,11 +423,14 @@ class BackendService {
 
   Future<void> onboardUser({
     required String displayName,
-    required String familyName,
+    String? familyName,
+    String? inviteCode,
     String? accessToken,
   }) async {
+    assert((familyName == null) != (inviteCode == null),
+        'Provide exactly one of familyName or inviteCode');
+
     final uri = Uri.parse('$baseUrl/auth/onboard');
-    // Use provided token (from signUp response) or fall back to current session
     final token = accessToken ??
         Supabase.instance.client.auth.currentSession?.accessToken;
     final response = await http.post(
@@ -438,12 +441,121 @@ class BackendService {
       },
       body: jsonEncode({
         'display_name': displayName,
-        'family_name': familyName,
+        if (familyName != null) 'family_name': familyName,
+        if (inviteCode != null) 'invite_code': inviteCode,
       }),
     );
 
-    if (response.statusCode != 201) {
-      throw Exception('Failed to onboard user: ${response.body}');
+    if (response.statusCode == 201) return;
+
+    String message;
+    try {
+      final body = jsonDecode(response.body);
+      final code = body['error']?.toString() ?? '';
+      switch (code) {
+        case 'invite_not_found':
+          message = 'Invite code not recognized.';
+          break;
+        case 'invite_used':
+          message = 'This invite code has already been used.';
+          break;
+        case 'invite_expired':
+          message = 'This invite code has expired. Ask for a new one.';
+          break;
+        case 'User already onboarded':
+          message = 'This account is already set up.';
+          break;
+        default:
+          message = code.isNotEmpty ? code : 'Onboarding failed (${response.statusCode}).';
+      }
+    } catch (_) {
+      message = 'Onboarding failed (${response.statusCode}).';
+    }
+    throw Exception(message);
+  }
+
+  Future<Map<String, dynamic>> createInvite() async {
+    final uri = Uri.parse('$baseUrl/family/invites');
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h),
+      json: true,
+    );
+    if (response.statusCode == 201) {
+      return Map<String, dynamic>.from(jsonDecode(response.body));
+    }
+    throw Exception('Failed to create invite: ${response.body}');
+  }
+
+  Future<List<Map<String, dynamic>>> listInvites() async {
+    final uri = Uri.parse('$baseUrl/family/invites');
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return List<Map<String, dynamic>>.from(jsonDecode(response.body));
+    }
+    throw Exception('Failed to load invites: ${response.body}');
+  }
+
+  Future<void> revokeInvite(String code) async {
+    final uri = Uri.parse('$baseUrl/family/invites/$code');
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to revoke invite: ${response.body}');
+    }
+  }
+
+  // ============= AUTH IDENTITY =============
+
+  Future<Map<String, dynamic>> getMe() async {
+    final uri = Uri.parse('$baseUrl/auth/me');
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return Map<String, dynamic>.from(jsonDecode(response.body));
+    }
+    throw Exception('Failed to load identity: ${response.body}');
+  }
+
+  // ============= SUPER ADMIN =============
+
+  Future<List<Map<String, dynamic>>> adminListFamilies() async {
+    final uri = Uri.parse('$baseUrl/admin/families');
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return List<Map<String, dynamic>>.from(jsonDecode(response.body));
+    }
+    throw Exception('Failed to load families: ${response.body}');
+  }
+
+  Future<void> adminUpdateUser(
+    String profileId, {
+    String? name,
+    String? email,
+  }) async {
+    final uri = Uri.parse('$baseUrl/admin/users/$profileId');
+    final body = <String, dynamic>{};
+    if (name != null && name.isNotEmpty) body['name'] = name;
+    if (email != null && email.isNotEmpty) body['email'] = email;
+    final response = await _withAuth(
+      (h) => http.put(uri, headers: h, body: jsonEncode(body)),
+      json: true,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update user: ${response.body}');
+    }
+  }
+
+  Future<void> adminDeleteUser(String profileId) async {
+    final uri = Uri.parse('$baseUrl/admin/users/$profileId');
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete user: ${response.body}');
+    }
+  }
+
+  Future<void> adminDeleteFamily(String familyId) async {
+    final uri = Uri.parse('$baseUrl/admin/families/$familyId');
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete family: ${response.body}');
     }
   }
 
