@@ -58,6 +58,12 @@ BEGIN
       VALUES (p_family_name, p_auth_id)
       RETURNING id INTO v_family_id;
     v_role := 'owner';
+
+    -- Every newly created family gets its own "General Shared" virtual profile.
+    -- It has no auth account (auth_id IS NULL) and no family_members row;
+    -- it surfaces in /family/data only via the family_id-based query.
+    INSERT INTO profiles(auth_id, email, name, family_id, is_virtual)
+      VALUES (NULL, NULL, 'General Shared', v_family_id, TRUE);
   END IF;
 
   INSERT INTO family_members(family_id, user_id, role, display_name)

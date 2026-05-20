@@ -36,7 +36,8 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
 
       setState(() {
         _recurringExpenses = rawRecurring.map((e) => RecurringExpense.fromJson(e)).toList();
-        _users = familyData.profiles;
+        // Recurring is a per-person concept; hide the family-level virtual profile.
+        _users = familyData.profiles.where((u) => !u.isVirtual).toList();
         _categories = familyData.categories;
         _paymentMethods = familyData.paymentMethods;
       });

@@ -29,8 +29,11 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
   Future<void> _loadUser() async {
     try {
       final familyData = await _backendService.getFamilyData();
-      if (familyData.profiles.isNotEmpty) {
-        _currentUser = familyData.profiles.first;
+      // Investments are per-person; skip the family-level virtual profile.
+      final realProfiles =
+          familyData.profiles.where((u) => !u.isVirtual).toList();
+      if (realProfiles.isNotEmpty) {
+        _currentUser = realProfiles.first;
       }
     } catch (e) {
       setState(() => _errorMessage = 'Failed to load profile: $e');

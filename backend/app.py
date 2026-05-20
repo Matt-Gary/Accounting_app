@@ -188,13 +188,21 @@ def get_family_data():
 
     profiles = []
     if g.family_id:
-        members_res = client.from_("family_members").select("user_id").eq("family_id", g.family_id).execute()
-        auth_ids = [m['user_id'] for m in members_res.data]
-        if auth_ids:
-            profiles_res = client.from_("profiles").select("id, name, email").in_("auth_id", auth_ids).execute()
-            profiles = profiles_res.data
+        # Query profiles by family_id directly (not via family_members) so that
+        # virtual profiles like "General Shared" — which have auth_id IS NULL and
+        # no family_members row — are included. Order real profiles first so the
+        # mobile dropdown's `_users.first` default keeps the logged-in human.
+        profiles_res = (
+            client.from_("profiles")
+            .select("id, name, email, is_virtual")
+            .eq("family_id", g.family_id)
+            .order("is_virtual", desc=False)
+            .order("name")
+            .execute()
+        )
+        profiles = profiles_res.data
     elif g.profile_id:
-        profile_res = client.from_("profiles").select("id, name, email").eq("id", g.profile_id).execute()
+        profile_res = client.from_("profiles").select("id, name, email, is_virtual").eq("id", g.profile_id).execute()
         profiles = profile_res.data
 
     if g.family_id:
@@ -506,9 +514,11 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
         .lt("spent_at", query_end.isoformat())
         
     if family_id:
-        # Family-scoped: materialize for all family members then filter by family_id
+        # Family-scoped: materialize for all real family members then filter by family_id.
+        # Virtual profiles (is_virtual=TRUE) never own recurring rows, so skip them.
         try:
-            family_users = client.from_("profiles").select("id").eq("family_id", family_id).execute().data
+            family_users = client.from_("profiles").select("id")\
+                .eq("family_id", family_id).eq("is_virtual", False).execute().data
             for user in family_users:
                 materialize_recurring_expenses(month, year, user['id'])
         except Exception as e:

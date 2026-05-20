@@ -69,12 +69,13 @@ SET search_path = public
 AS $$
 BEGIN
   -- Collect every (auth_id, profile_id) pair belonging to this family before
-  -- we start deleting rows. Temp table is scoped to this transaction.
+  -- we start deleting rows. We query profiles directly by family_id so that
+  -- virtual profiles (auth_id IS NULL, no family_members row) are included
+  -- and never left orphaned after the family delete.
   CREATE TEMP TABLE _doomed ON COMMIT DROP AS
     SELECT p.auth_id, p.id AS profile_id
       FROM profiles p
-      JOIN family_members fm ON fm.user_id = p.auth_id
-      WHERE fm.family_id = p_family_id;
+      WHERE p.family_id = p_family_id;
 
   -- Family-scoped rows first.
   DELETE FROM expenses               WHERE family_id = p_family_id;

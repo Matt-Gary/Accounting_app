@@ -68,19 +68,22 @@ class PaymentMethod {
 class UserProfile {
   final String id;
   final String name;
-  final String email;
+  final String? email;
+  final bool isVirtual;
 
   UserProfile({
     required this.id,
     required this.name,
-    required this.email,
+    this.email,
+    this.isVirtual = false,
   });
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
     return UserProfile(
       id: json['id'],
       name: json['name'],
-      email: json['email'],
+      email: json['email'] as String?,
+      isVirtual: (json['is_virtual'] as bool?) ?? false,
     );
   }
 
