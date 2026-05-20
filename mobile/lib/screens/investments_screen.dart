@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
 import 'add_investment_screen.dart';
@@ -16,7 +15,6 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
   bool _isLoading = false;
   bool _isLoadingUser = true;
   PortfolioData? _portfolio;
-  PortfolioDistribution? _distribution;
   String _errorMessage = '';
   UserProfile? _currentUser;
 
@@ -50,41 +48,12 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
     });
 
     try {
-      List<String>? typesFilter;
-      if (_chartTypeFilter != 'All') {
-        typesFilter = [_chartTypeFilter.toLowerCase()];
-      }
-
-      final results = await Future.wait([
-        _backendService.getInvestments(),
-        _backendService.getPortfolioDistribution(investmentTypes: typesFilter),
-      ]);
-
-      setState(() {
-        _portfolio = results[0] as PortfolioData;
-        _distribution = results[1] as PortfolioDistribution;
-      });
+      final portfolio = await _backendService.getInvestments();
+      setState(() => _portfolio = portfolio);
     } catch (e) {
       setState(() => _errorMessage = e.toString());
     } finally {
       setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _loadDistribution() async {
-    try {
-      // Only apply chart type filter if not 'All'
-      List<String>? typesFilter;
-      if (_chartTypeFilter != 'All') {
-        typesFilter = [_chartTypeFilter.toLowerCase()];
-      }
-
-      final dist = await _backendService.getPortfolioDistribution(
-        investmentTypes: typesFilter,
-      );
-      setState(() => _distribution = dist);
-    } catch (e) {
-      print('Error loading distribution: $e');
     }
   }
 
@@ -345,10 +314,8 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
 
                       const SizedBox(height: 20),
 
-                      // Pie Chart Section
-                      if (_distribution != null &&
-                          _distribution!.distribution.isNotEmpty)
-                        _buildPieChart(),
+                      // Allocation Bars Section
+                      _buildAllocationBars(),
 
                       const SizedBox(height: 20),
 
@@ -378,7 +345,6 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
   String _filterType = 'All';
   String _filterCurrency = 'All';
   String _chartCurrency = 'BRL'; // 'BRL' or 'USD'
-  String _chartTypeFilter = 'All'; // Filter for pie chart by type
 
   Widget _buildFilters() {
     return SingleChildScrollView(
@@ -410,37 +376,38 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
     );
   }
 
-  Widget _buildPieChart() {
-    if (_distribution == null) return const SizedBox.shrink();
+  Widget _buildAllocationBars() {
+    if (_portfolio == null || _portfolio!.investments.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+            color: Colors.white, borderRadius: BorderRadius.circular(12)),
+        child: Row(
+          children: [
+            Icon(Icons.bar_chart, color: Colors.grey.shade400, size: 32),
+            const SizedBox(width: 12),
+            Text('No investments yet',
+                style: TextStyle(color: Colors.grey.shade600)),
+          ],
+        ),
+      );
+    }
 
-    double totalVal = _chartCurrency == 'BRL'
-        ? _distribution!.totalValueBrl
-        : _distribution!.totalValueUsd;
-
-    List<PieChartSectionData> sections = [];
-    bool showingIndividual =
-        _distribution!.items != null && _distribution!.items!.isNotEmpty;
-    bool isEmpty = totalVal == 0 ||
-        (_distribution!.distribution.isEmpty && !showingIndividual);
+    final bool useUsd = _chartCurrency == 'USD';
+    final double total =
+        useUsd ? _portfolio!.totalValueUsd : _portfolio!.totalValueBrl;
 
     final Map<String, Color> typeColors = {
-      'stock': Colors.blue,
-      'crypto': Colors.orange,
-      'bond': Colors.green,
-      'cash': Colors.teal,
-      'other': Colors.purple,
+      'crypto': Colors.orange.shade700,
+      'bond': Colors.green.shade600,
+      'cash': Colors.teal.shade600,
+      'other': Colors.purple.shade600,
     };
 
-    // More diverse color scheme for individual investments
-    final List<Color> individualColors = [
+    final List<Color> stockColors = [
       Colors.blue.shade700,
-      Colors.green.shade600,
-      Colors.orange.shade700,
-      Colors.purple.shade600,
-      Colors.teal.shade700,
-      Colors.indigo.shade700,
+      Colors.indigo.shade600,
       Colors.pink.shade600,
-      Colors.lime.shade700,
       Colors.cyan.shade700,
       Colors.deepOrange.shade600,
       Colors.lightBlue.shade600,
@@ -448,208 +415,179 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
       Colors.deepPurple.shade600,
       Colors.lightGreen.shade700,
       Colors.brown.shade600,
+      Colors.red.shade600,
+      Colors.lime.shade700,
     ];
 
-    if (showingIndividual && !isEmpty) {
-      // Show individual investments
-      int colorIndex = 0;
-      for (var item in _distribution!.items!) {
-        double val = _chartCurrency == 'BRL' ? item.valueBrl : item.valueUsd;
+    final Map<String, double> typeAggregates = {};
+    final Map<String, _StockBucket> stockBySymbol = {};
 
-        if (val <= 0) continue;
+    for (final inv in _portfolio!.investments) {
+      final double val =
+          useUsd ? (inv.currentValueUsd ?? 0) : (inv.currentValueBrl ?? 0);
+      if (val <= 0) continue;
 
-        final color = individualColors[colorIndex % individualColors.length];
-        final pct = item.percentage;
-
-        sections.add(PieChartSectionData(
-          color: color,
-          value: val,
-          title: '${pct.toStringAsFixed(1)}%',
-          radius: 60,
-          titleStyle: const TextStyle(
-              fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-        ));
-        colorIndex++;
-      }
-    } else if (!isEmpty) {
-      // Show aggregated by type
-      for (var typeData in _distribution!.distribution) {
-        double val =
-            _chartCurrency == 'BRL' ? typeData.valueBrl : typeData.valueUsd;
-
-        if (val <= 0) continue;
-
-        final color = typeColors[typeData.type.toLowerCase()] ?? Colors.grey;
-        final pct = typeData.percentage;
-
-        sections.add(PieChartSectionData(
-          color: color,
-          value: val,
-          title: '${pct.toStringAsFixed(1)}%',
-          radius: 60,
-          titleStyle: const TextStyle(
-              fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-        ));
+      if (inv.type.toLowerCase() == 'stock') {
+        final key = (inv.symbol != null && inv.symbol!.isNotEmpty)
+            ? inv.symbol!
+            : inv.name;
+        final existing = stockBySymbol[key];
+        if (existing == null) {
+          stockBySymbol[key] =
+              _StockBucket(label: key, name: inv.name, value: val);
+        } else {
+          existing.value += val;
+        }
+      } else {
+        // Merge cash + bond into a single bucket per the design.
+        final raw = inv.type.toLowerCase();
+        final key = (raw == 'cash' || raw == 'bond') ? 'bond+cash' : raw;
+        typeAggregates[key] = (typeAggregates[key] ?? 0) + val;
       }
     }
+
+    const Map<String, String> typeLabels = {
+      'bond+cash': 'Bond+Cash',
+      'crypto': 'Crypto',
+      'other': 'Other',
+    };
+    final Color bondCashColor = Colors.teal.shade600;
+
+    final List<_AllocRow> rows = [];
+    typeAggregates.forEach((type, value) {
+      rows.add(_AllocRow(
+        label: typeLabels[type] ?? (type[0].toUpperCase() + type.substring(1)),
+        sublabel: '',
+        value: value,
+        color: type == 'bond+cash'
+            ? bondCashColor
+            : (typeColors[type] ?? Colors.grey),
+      ));
+    });
+
+    final sortedStocks = stockBySymbol.values.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    for (int i = 0; i < sortedStocks.length; i++) {
+      final s = sortedStocks[i];
+      rows.add(_AllocRow(
+        label: s.label,
+        sublabel: s.name == s.label ? '' : s.name,
+        value: s.value,
+        color: stockColors[i % stockColors.length],
+      ));
+    }
+
+    rows.sort((a, b) => b.value.compareTo(a.value));
+
+    final String currencyPrefix = useUsd ? '\$' : 'R\$';
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
           color: Colors.white, borderRadius: BorderRadius.circular(12)),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                showingIndividual
-                    ? "Individual $_chartTypeFilter Holdings"
-                    : "Portfolio Distribution by Type",
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              // Currency Toggle
+              const Text('Portfolio Allocation',
+                  style:
+                      TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               Row(children: [
                 _chartToggleBtn('BRL'),
                 const SizedBox(width: 4),
                 _chartToggleBtn('USD'),
-              ])
+              ]),
             ],
           ),
-          const SizedBox(height: 12),
-          // Type filter for pie chart
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                const Text("Filter: ",
-                    style: TextStyle(fontSize: 12, color: Colors.grey)),
-                ...['All', 'Stock', 'Crypto', 'Bond', 'Cash', 'Other']
-                    .map((type) => Padding(
-                          padding: const EdgeInsets.only(right: 4),
-                          child: _chartTypeFilterBtn(type),
-                        ))
-                    ,
-              ],
-            ),
-          ),
+          const SizedBox(height: 4),
+          Text('Every position across all assets',
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
           const SizedBox(height: 16),
-          SizedBox(
-            height: 200,
-            child: isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+          if (rows.isEmpty || total <= 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text('No positions to display',
+                  style: TextStyle(color: Colors.grey.shade500)),
+            )
+          else
+            ...rows.map((r) {
+              final double pct = (r.value / total) * 100;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        Icon(Icons.pie_chart_outline,
-                            size: 64, color: Colors.grey.shade300),
-                        const SizedBox(height: 8),
-                        Text(
-                          _chartTypeFilter == 'All'
-                              ? 'No investments'
-                              : 'No ${_chartTypeFilter.toLowerCase()} investments',
-                          style: TextStyle(
-                              color: Colors.grey.shade500, fontSize: 14),
+                        Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                              color: r.color, shape: BoxShape.circle),
                         ),
+                        const SizedBox(width: 8),
+                        Text(r.label,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 14)),
+                        if (r.sublabel.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              r.sublabel,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: Colors.grey.shade600, fontSize: 13),
+                            ),
+                          ),
+                        ] else
+                          const Spacer(),
+                        Text('${pct.toStringAsFixed(1)}%',
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w600, fontSize: 13)),
                       ],
                     ),
-                  )
-                : PieChart(
-                    PieChartData(
-                      sections: sections,
-                      centerSpaceRadius: 40,
-                      sectionsSpace: 2,
+                    const SizedBox(height: 4),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 18),
+                      child: Text(
+                        '$currencyPrefix ${r.value.toStringAsFixed(2)}',
+                        style: TextStyle(
+                            color: Colors.grey.shade500, fontSize: 11),
+                      ),
                     ),
-                  ),
-          ),
-          if (!isEmpty) const SizedBox(height: 12),
-          // Legend (only show if not empty)
-          if (!isEmpty)
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              children: showingIndividual
-                  ? _distribution!.items!.asMap().entries.map((entry) {
-                      int idx = entry.key;
-                      var item = entry.value;
-                      final color =
-                          individualColors[idx % individualColors.length];
-                      final val = _chartCurrency == 'BRL'
-                          ? item.valueBrl
-                          : item.valueUsd;
-                      final symbol = _chartCurrency == 'BRL' ? 'R\$' : '\$';
-                      final displayName = item.symbol ?? item.name;
-                      return Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              color: color,
-                              shape: BoxShape.circle,
+                    const SizedBox(height: 6),
+                    LayoutBuilder(
+                      builder: (ctx, c) {
+                        final double clampedPct =
+                            (pct / 100).clamp(0.0, 1.0);
+                        return Stack(
+                          children: [
+                            Container(
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade200,
+                                borderRadius: BorderRadius.circular(2),
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '$displayName: $symbol ${val.toStringAsFixed(2)}',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                        ],
-                      );
-                    }).toList()
-                  : _distribution!.distribution.map((typeData) {
-                      final color = typeColors[typeData.type.toLowerCase()] ??
-                          Colors.grey;
-                      final val = _chartCurrency == 'BRL'
-                          ? typeData.valueBrl
-                          : typeData.valueUsd;
-                      final symbol = _chartCurrency == 'BRL' ? 'R\$' : '\$';
-                      return Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              color: color,
-                              shape: BoxShape.circle,
+                            Container(
+                              height: 4,
+                              width: c.maxWidth * clampedPct,
+                              decoration: BoxDecoration(
+                                color: r.color,
+                                borderRadius: BorderRadius.circular(2),
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${typeData.type.toUpperCase()}: $symbol ${val.toStringAsFixed(2)}',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                        ],
-                      );
-                    }).toList(),
-            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              );
+            }),
         ],
-      ),
-    );
-  }
-
-  Widget _chartTypeFilterBtn(String type) {
-    bool isSelected = _chartTypeFilter == type;
-    return GestureDetector(
-      onTap: () {
-        setState(() => _chartTypeFilter = type);
-        _loadDistribution();
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.blue : Colors.grey[200],
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Text(
-          type,
-          style: TextStyle(
-              color: isSelected ? Colors.white : Colors.black,
-              fontSize: 10,
-              fontWeight: FontWeight.w600),
-        ),
       ),
     );
   }
@@ -672,4 +610,28 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
       ),
     );
   }
+}
+
+class _AllocRow {
+  final String label;
+  final String sublabel;
+  final double value;
+  final Color color;
+  _AllocRow({
+    required this.label,
+    required this.sublabel,
+    required this.value,
+    required this.color,
+  });
+}
+
+class _StockBucket {
+  final String label;
+  final String name;
+  double value;
+  _StockBucket({
+    required this.label,
+    required this.name,
+    required this.value,
+  });
 }
