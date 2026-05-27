@@ -1,7 +1,9 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
 import 'add_investment_screen.dart';
+import '../widgets/language_toggle.dart';
 
 class InvestmentsScreen extends StatefulWidget {
   const InvestmentsScreen({super.key});
@@ -34,7 +36,8 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
         _currentUser = realProfiles.first;
       }
     } catch (e) {
-      setState(() => _errorMessage = 'Failed to load profile: $e');
+      setState(() => _errorMessage = 'common.error_with_message'
+          .tr(namedArgs: {'error': e.toString()}));
     } finally {
       setState(() => _isLoadingUser = false);
       if (_currentUser != null) _loadData();
@@ -63,7 +66,9 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
       _loadData();
     } catch (e) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Error: $e')));
+          .showSnackBar(SnackBar(
+              content: Text('common.error_with_message'
+                  .tr(namedArgs: {'error': e.toString()}))));
     }
   }
 
@@ -110,19 +115,19 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
           showDialog(
               context: context,
               builder: (ctx) => AlertDialog(
-                    title: const Text("Delete Investment"),
-                    content: const Text("Are you sure?"),
+                    title: Text('investments.delete_title'.tr()),
+                    content: Text('investments.are_you_sure'.tr()),
                     actions: [
                       TextButton(
                           onPressed: () => Navigator.pop(ctx),
-                          child: const Text("Cancel")),
+                          child: Text('common.cancel'.tr())),
                       TextButton(
                           onPressed: () {
                             Navigator.pop(ctx);
                             if (inv.id != null) _delete(inv.id!);
                           },
-                          child: const Text("Delete",
-                              style: TextStyle(color: Colors.red))),
+                          child: Text('common.delete'.tr(),
+                              style: const TextStyle(color: Colors.red))),
                     ],
                   ));
         },
@@ -196,11 +201,14 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     if (_isLoadingUser || _isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
     if (_errorMessage.isNotEmpty && _currentUser == null) {
-      return Center(child: Text('Error: $_errorMessage'));
+      return Center(
+          child: Text('common.error_with_message'
+              .tr(namedArgs: {'error': _errorMessage})));
     }
 
     // Filter Logic
@@ -220,10 +228,12 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text('Investments', style: TextStyle(color: Colors.black)),
+        title: Text('nav.investments'.tr(),
+            style: const TextStyle(color: Colors.black)),
         backgroundColor: Colors.white,
         elevation: 0,
         actions: [
+          const LanguageToggle(),
           IconButton(
               icon: const Icon(Icons.refresh, color: Colors.black),
               onPressed: _loadData),
@@ -243,7 +253,9 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorMessage.isNotEmpty
-              ? Center(child: Text('Error: $_errorMessage'))
+              ? Center(
+                  child: Text('common.error_with_message'
+                      .tr(namedArgs: {'error': _errorMessage})))
               : SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
                   child: Column(
@@ -261,8 +273,8 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Text('Total BRL',
-                                      style: TextStyle(
+                                  Text('investments.total_brl'.tr(),
+                                      style: const TextStyle(
                                           color: Colors.white70, fontSize: 12)),
                                   const SizedBox(height: 5),
                                   Text(
@@ -287,8 +299,8 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Text('Total USD',
-                                      style: TextStyle(
+                                  Text('investments.total_usd'.tr(),
+                                      style: const TextStyle(
                                           color: Colors.white70, fontSize: 12)),
                                   const SizedBox(height: 5),
                                   Text(
@@ -309,7 +321,10 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                         Align(
                             alignment: Alignment.centerRight,
                             child: Text(
-                                "Rate: 1 USD = ${(_portfolio!.exchangeRate).toStringAsFixed(2)} BRL",
+                                'investments.rate'.tr(namedArgs: {
+                                  'rate': _portfolio!.exchangeRate
+                                      .toStringAsFixed(2)
+                                }),
                                 style: const TextStyle(color: Colors.grey))),
 
                       const SizedBox(height: 20),
@@ -327,14 +342,14 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
                       if (filteredList != null && filteredList.isNotEmpty)
                         ...filteredList.map(_buildInvestmentCard)
                       else
-                        const Padding(
-                          padding: EdgeInsets.all(20.0),
-                          child: Text("No investments found matching filters."),
+                        Padding(
+                          padding: const EdgeInsets.all(20.0),
+                          child: Text('investments.no_match'.tr()),
                         ),
 
                       const SizedBox(height: 20),
-                      const Text("Long press to delete, tap to edit.",
-                          style: TextStyle(color: Colors.grey)),
+                      Text('investments.long_press_hint'.tr(),
+                          style: const TextStyle(color: Colors.grey)),
                     ],
                   ),
                 ),
@@ -351,7 +366,8 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
       scrollDirection: Axis.horizontal,
       child: Row(
         children: [
-          const Text("Type: ", style: TextStyle(fontWeight: FontWeight.bold)),
+          Text('investments.type_label'.tr(),
+              style: const TextStyle(fontWeight: FontWeight.bold)),
           DropdownButton<String>(
             value: _filterType,
             items: ['All', 'Stock', 'Crypto', 'Bond', 'Cash', 'Other']
@@ -361,8 +377,8 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
             underline: Container(),
           ),
           const SizedBox(width: 16),
-          const Text("Currency: ",
-              style: TextStyle(fontWeight: FontWeight.bold)),
+          Text('investments.currency_label'.tr(),
+              style: const TextStyle(fontWeight: FontWeight.bold)),
           DropdownButton<String>(
             value: _filterCurrency,
             items: ['All', 'BRL', 'USD', 'EUR', 'PLN']
@@ -386,7 +402,7 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
           children: [
             Icon(Icons.bar_chart, color: Colors.grey.shade400, size: 32),
             const SizedBox(width: 12),
-            Text('No investments yet',
+            Text('investments.no_investments'.tr(),
                 style: TextStyle(color: Colors.grey.shade600)),
           ],
         ),
@@ -491,9 +507,9 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Portfolio Allocation',
-                  style:
-                      TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Text('investments.portfolio_allocation'.tr(),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 16)),
               Row(children: [
                 _chartToggleBtn('BRL'),
                 const SizedBox(width: 4),
@@ -502,13 +518,13 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
             ],
           ),
           const SizedBox(height: 4),
-          Text('Every position across all assets',
+          Text('investments.portfolio_subtitle'.tr(),
               style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
           const SizedBox(height: 16),
           if (rows.isEmpty || total <= 0)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 16),
-              child: Text('No positions to display',
+              child: Text('investments.no_positions'.tr(),
                   style: TextStyle(color: Colors.grey.shade500)),
             )
           else

@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,6 +14,7 @@ import 'expense_details_screen.dart';
 import 'recurring_expenses_screen.dart';
 import 'category_management_screen.dart';
 import 'family_invites_screen.dart';
+import '../widgets/language_toggle.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -33,6 +35,7 @@ class HomeScreenState extends State<HomeScreen> {
   int? _closingDay;
   bool _showUserChart = true;
   bool _showCategoryChart = true;
+  Map<String, String> _categoryKeyByLabel = {};
 
   @override
   void initState() {
@@ -60,14 +63,14 @@ class HomeScreenState extends State<HomeScreen> {
 
   Future<void> _checkForUpdate() async {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Checking for updates...')),
+      SnackBar(content: Text('update.checking'.tr())),
     );
     try {
       final versionData = await _backendService.checkForUpdate();
       if (versionData == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not reach update server.')),
+            SnackBar(content: Text('update.no_server'.tr())),
           );
         }
         return;
@@ -79,8 +82,8 @@ class HomeScreenState extends State<HomeScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-                content: Text(
-                    'You are on the latest version (${packageInfo.version}).')),
+                content: Text('update.latest'
+                    .tr(namedArgs: {'version': packageInfo.version}))),
           );
         }
         return;
@@ -93,16 +96,18 @@ class HomeScreenState extends State<HomeScreen> {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Update Available'),
-          content: Text(
-              'Version $remoteName is available.\n\n$releaseNotes\n\nDownload and install now?'),
+          title: Text('update.title'.tr()),
+          content: Text('update.body'.tr(namedArgs: {
+            'name': remoteName.toString(),
+            'notes': releaseNotes.toString(),
+          })),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Later')),
+                child: Text('update.later'.tr())),
             ElevatedButton(
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Update')),
+                child: Text('update.update_button'.tr())),
           ],
         ),
       );
@@ -117,10 +122,9 @@ class HomeScreenState extends State<HomeScreen> {
         await openAppSettings(); // opens Install Unknown Apps settings page
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'Enable "Install unknown apps" for this app, then tap Update again.'),
-              duration: Duration(seconds: 6),
+            SnackBar(
+              content: Text('update.enable_unknown_apps'.tr()),
+              duration: const Duration(seconds: 6),
             ),
           );
         }
@@ -135,14 +139,14 @@ class HomeScreenState extends State<HomeScreen> {
         builder: (ctx) => ValueListenableBuilder<double>(
           valueListenable: progressNotifier,
           builder: (_, progress, __) => AlertDialog(
-            title: const Text('Downloading Update'),
+            title: Text('update.downloading'.tr()),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 LinearProgressIndicator(value: progress == 0 ? null : progress),
                 const SizedBox(height: 12),
                 Text(progress == 0
-                    ? 'Starting...'
+                    ? 'update.starting'.tr()
                     : '${(progress * 100).toStringAsFixed(0)}%'),
               ],
             ),
@@ -162,7 +166,8 @@ class HomeScreenState extends State<HomeScreen> {
       if (result.type != ResultType.done && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Could not open installer: ${result.message}')),
+              content: Text('update.cannot_open'
+                  .tr(namedArgs: {'message': result.message}))),
         );
       }
     } catch (e) {
@@ -170,7 +175,9 @@ class HomeScreenState extends State<HomeScreen> {
         Navigator.of(context).popUntil((r) => r.isFirst);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Update failed: $e'), backgroundColor: Colors.red),
+              content: Text(
+                  'update.failed'.tr(namedArgs: {'error': e.toString()})),
+              backgroundColor: Colors.red),
         );
       }
     }
@@ -193,10 +200,16 @@ class HomeScreenState extends State<HomeScreen> {
         year: _currentDate.year,
         closingDay: _closingDay,
         onRefresh: (refreshed) {
-          if (mounted) setState(() => _dashboardData = refreshed);
+          if (mounted) setState(() {
+            _dashboardData = refreshed;
+            _buildCategoryMap();
+          });
         },
       );
-      if (mounted) setState(() => _dashboardData = data);
+      if (mounted) setState(() {
+        _dashboardData = data;
+        _buildCategoryMap();
+      });
     } catch (e) {
       if (mounted) setState(() => _errorMessage = e.toString());
     } finally {
@@ -226,6 +239,27 @@ class HomeScreenState extends State<HomeScreen> {
         .toList();
     categories.sort();
     return categories;
+  }
+
+  void _buildCategoryMap() {
+    if (_dashboardData == null) {
+      _categoryKeyByLabel = {};
+      return;
+    }
+    _categoryKeyByLabel = {
+      for (final e in _dashboardData!.expenses)
+        if (e['category_label'] != null && e['category_key'] != null)
+          e['category_label'] as String: e['category_key'] as String
+    };
+  }
+
+  String _translateCategoryLabel(String label) {
+    final key = _categoryKeyByLabel[label];
+    if (key == null) return label;
+    final translationKey = 'categories.$key';
+    final translated = translationKey.tr();
+    // If easy_localization returns the key unchanged, the key isn't in the JSON
+    return translated == translationKey ? label : translated;
   }
 
   List<dynamic> _getFilteredExpenses() {
@@ -258,9 +292,9 @@ class HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
-              const Text(
-                'Select Closing Day',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              Text(
+                'closing_day.title'.tr(),
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 10),
               Expanded(
@@ -269,7 +303,8 @@ class HomeScreenState extends State<HomeScreen> {
                   itemBuilder: (context, index) {
                     final day = index + 1;
                     return ListTile(
-                      title: Text('Day $day'),
+                      title: Text(
+                          'closing_day.day'.tr(namedArgs: {'day': day.toString()})),
                       selected: _closingDay == day,
                       trailing: _closingDay == day
                           ? const Icon(Icons.check, color: Colors.blue)
@@ -289,7 +324,8 @@ class HomeScreenState extends State<HomeScreen> {
                         } catch (e) {
                           if (ctx.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Error: $e')),
+                              SnackBar(content: Text('common.error_with_message'
+                                  .tr(namedArgs: {'error': e.toString()}))),
                             );
                           }
                         }
@@ -318,7 +354,7 @@ class HomeScreenState extends State<HomeScreen> {
                     }
                   }
                 },
-                child: const Text('Reset to Default (23)'),
+                child: Text('closing_day.reset'.tr()),
               ),
             ],
           ),
@@ -350,15 +386,12 @@ class HomeScreenState extends State<HomeScreen> {
       await showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text("Cannot Delete"),
-          content: const Text(
-              "This expense is auto-generated from a recurring definition. "
-              "It will reappear next time the dashboard loads. "
-              "To stop it permanently, deactivate the recurring expense in Recurring Expenses settings."),
+          title: Text('delete_expense.cannot_delete_title'.tr()),
+          content: Text('delete_expense.recurring_warning'.tr()),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text("OK"),
+              child: Text('common.ok'.tr()),
             ),
           ],
         ),
@@ -370,35 +403,35 @@ class HomeScreenState extends State<HomeScreen> {
     final String? scope = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Delete Expense"),
+        title: Text('delete_expense.title'.tr()),
         content: Text(isInstallment
-            ? "This expense is part of an installment series. What do you want to delete?"
-            : "Are you sure you want to delete this expense?"),
+            ? 'delete_expense.installment_body'.tr()
+            : 'delete_expense.confirm_body'.tr()),
         actions: isInstallment
             ? [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, null),
-                  child: const Text("Cancel"),
+                  child: Text('common.cancel'.tr()),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, 'this'),
-                  child: const Text("Only this installment"),
+                  child: Text('delete_expense.only_this'.tr()),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, 'future'),
-                  child: const Text("This + future",
-                      style: TextStyle(color: Colors.red)),
+                  child: Text('delete_expense.this_and_future'.tr(),
+                      style: const TextStyle(color: Colors.red)),
                 ),
               ]
             : [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, null),
-                  child: const Text("Cancel"),
+                  child: Text('common.cancel'.tr()),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, 'this'),
-                  child:
-                      const Text("Delete", style: TextStyle(color: Colors.red)),
+                  child: Text('common.delete'.tr(),
+                      style: const TextStyle(color: Colors.red)),
                 ),
               ],
       ),
@@ -409,14 +442,15 @@ class HomeScreenState extends State<HomeScreen> {
         await _backendService.deleteExpense(expense['id'], scope: scope);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Expense deleted successfully')),
+            SnackBar(content: Text('delete_expense.success'.tr())),
           );
           _reloadAfterMutation();
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e')),
+            SnackBar(content: Text('common.error_with_message'
+                .tr(namedArgs: {'error': e.toString()}))),
           );
         }
       }
@@ -425,22 +459,24 @@ class HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text('Accounting App',
-            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+        title: Text('home.app_title'.tr(),
+            style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
         elevation: 0,
         actions: [
+          const LanguageToggle(),
           IconButton(
             icon: const Icon(Icons.system_update_alt, color: Colors.black),
-            tooltip: 'Check for Updates',
+            tooltip: 'home.check_updates_tooltip'.tr(),
             onPressed: _checkForUpdate,
           ),
           IconButton(
             icon: const Icon(Icons.category_outlined, color: Colors.black),
-            tooltip: 'Manage Categories',
+            tooltip: 'home.manage_categories_tooltip'.tr(),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -449,7 +485,7 @@ class HomeScreenState extends State<HomeScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.group_add_outlined, color: Colors.black),
-            tooltip: 'Family Invites',
+            tooltip: 'home.family_invites_tooltip'.tr(),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const FamilyInvitesScreen()),
@@ -457,7 +493,7 @@ class HomeScreenState extends State<HomeScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.black),
-            tooltip: 'Sign out',
+            tooltip: 'home.sign_out_tooltip'.tr(),
             onPressed: () async {
               final prefs = await SharedPreferences.getInstance();
               await prefs.remove('remember_me');
@@ -476,14 +512,15 @@ class HomeScreenState extends State<HomeScreen> {
                     _currentDate.month, _currentDate.year);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Opening report download...')),
+                    SnackBar(content: Text('home.opening_report'.tr())),
                   );
                 }
               } catch (e) {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                        content: Text('Failed to download report: $e'),
+                        content: Text('home.report_failed'
+                            .tr(namedArgs: {'error': e.toString()})),
                         backgroundColor: Colors.red),
                   );
                 }
@@ -506,7 +543,7 @@ class HomeScreenState extends State<HomeScreen> {
               ],
             ),
             onPressed: _showClosingDayPicker,
-            tooltip: 'Set Closing Day',
+            tooltip: 'home.set_closing_day_tooltip'.tr(),
           ),
         ],
       ),
@@ -551,7 +588,7 @@ class HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       children: [
                         FilterChip(
-                          label: const Text('All'),
+                          label: Text('common.all'.tr()),
                           selected: _selectedCategory == null,
                           onSelected: (selected) {
                             setState(() => _selectedCategory = null);
@@ -569,7 +606,7 @@ class HomeScreenState extends State<HomeScreen> {
                           return Padding(
                             padding: const EdgeInsets.only(right: 8),
                             child: FilterChip(
-                              label: Text(cat),
+                              label: Text(_translateCategoryLabel(cat)),
                               selected: isSelected,
                               onSelected: (selected) {
                                 setState(() =>
@@ -606,8 +643,8 @@ class HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Income by User',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text('home.income_by_user'.tr(),
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
                       ..._dashboardData!.userEarnedBreakdown.entries.map((e) {
                         return Padding(
@@ -635,24 +672,24 @@ class HomeScreenState extends State<HomeScreen> {
               if (_dashboardData!.categoryBreakdown.isNotEmpty)
                 _buildCategoryChart()
               else
-                const SizedBox(
+                SizedBox(
                     height: 100,
-                    child: Center(child: Text('No expenses this month'))),
+                    child: Center(child: Text('home.no_expenses_this_month'.tr()))),
 
               const SizedBox(height: 20),
 
               if (_dashboardData!.earnings.isNotEmpty) ...[
                 ExpansionTile(
-                  title: const Text('Recent Earnings',
+                  title: Text('home.recent_earnings'.tr(),
                       style:
-                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                          const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   children: _dashboardData!.earnings.map((earning) {
                     return ListTile(
                       leading: const CircleAvatar(
                         backgroundColor: Colors.green,
                         child: Icon(Icons.attach_money, color: Colors.white),
                       ),
-                      title: Text(earning.userName ?? 'Unknown'),
+                      title: Text(earning.userName ?? 'common.unknown'.tr()),
                       subtitle: earning.description != null &&
                               earning.description!.isNotEmpty
                           ? Text(earning.description!)
@@ -681,8 +718,8 @@ class HomeScreenState extends State<HomeScreen> {
               ],
 
               // Recent Expenses List (from raw expenses)
-              const Text('Recent Expenses',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              Text('home.recent_expenses'.tr(),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 10),
 
               if (_selectedUser != null)
@@ -692,7 +729,8 @@ class HomeScreenState extends State<HomeScreen> {
                     alignment: Alignment.centerLeft,
                     child: InputChip(
                       avatar: const Icon(Icons.person, size: 16),
-                      label: Text('Filtered by: $_selectedUser'),
+                      label: Text('home.filtered_by'
+                          .tr(namedArgs: {'name': _selectedUser ?? ''})),
                       onDeleted: () => setState(() => _selectedUser = null),
                       deleteIcon: const Icon(Icons.close, size: 16),
                     ),
@@ -737,11 +775,11 @@ class HomeScreenState extends State<HomeScreen> {
                         onLongPress: () => _deleteExpense(exp),
                         leading: CircleAvatar(
                           backgroundColor: Colors.blue[50],
-                          child: Text(exp['category_label'][0]),
+                          child: Text(_translateCategoryLabel(exp['category_label'] as String)[0]),
                         ),
                         title: Row(
                           children: [
-                            Flexible(child: Text(exp['category_label'])),
+                            Flexible(child: Text(_translateCategoryLabel(exp['category_label'] as String))),
                             if (isRecurring) ...[
                               const SizedBox(width: 6),
                               const Icon(Icons.repeat,
@@ -805,7 +843,7 @@ class HomeScreenState extends State<HomeScreen> {
             children: [
               ListTile(
                 leading: const Icon(Icons.money_off, color: Colors.red),
-                title: const Text('Add Expense'),
+                title: Text('add_options.expense'.tr()),
                 onTap: () async {
                   Navigator.pop(ctx);
                   await Navigator.push(
@@ -817,7 +855,7 @@ class HomeScreenState extends State<HomeScreen> {
               ),
               ListTile(
                 leading: const Icon(Icons.attach_money, color: Colors.green),
-                title: const Text('Add Income'),
+                title: Text('add_options.income'.tr()),
                 onTap: () async {
                   Navigator.pop(ctx);
                   await Navigator.push(
@@ -829,7 +867,7 @@ class HomeScreenState extends State<HomeScreen> {
               ),
               ListTile(
                 leading: const Icon(Icons.repeat, color: Colors.blue),
-                title: const Text('Recurring Expenses'),
+                title: Text('add_options.recurring'.tr()),
                 onTap: () async {
                   Navigator.pop(ctx);
                   await Navigator.push(
@@ -865,7 +903,7 @@ class HomeScreenState extends State<HomeScreen> {
       ),
       child: Column(
         children: [
-          const Text('Balance', style: TextStyle(color: Colors.white70)),
+          Text('home.balance'.tr(), style: const TextStyle(color: Colors.white70)),
           const SizedBox(height: 5),
           Text(
             'R\$ ${balance.toStringAsFixed(2)}',
@@ -880,7 +918,7 @@ class HomeScreenState extends State<HomeScreen> {
             children: [
               Column(
                 children: [
-                  const Text('Income', style: TextStyle(color: Colors.white54)),
+                  Text('home.income'.tr(), style: const TextStyle(color: Colors.white54)),
                   const SizedBox(height: 4),
                   Text(
                     'R\$ ${_dashboardData!.totalEarned.toStringAsFixed(2)}',
@@ -894,8 +932,8 @@ class HomeScreenState extends State<HomeScreen> {
               Container(height: 30, width: 1, color: Colors.white24),
               Column(
                 children: [
-                  const Text('Expense',
-                      style: TextStyle(color: Colors.white54)),
+                  Text('home.expense'.tr(),
+                      style: const TextStyle(color: Colors.white54)),
                   const SizedBox(height: 4),
                   Text(
                     'R\$ ${_getFilteredTotalSpent().toStringAsFixed(2)}',
@@ -970,8 +1008,8 @@ class HomeScreenState extends State<HomeScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Spending by Person',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('home.spending_by_person'.tr(),
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
                 Icon(_showUserChart
                     ? Icons.keyboard_arrow_up
                     : Icons.keyboard_arrow_down),
@@ -1158,8 +1196,8 @@ class HomeScreenState extends State<HomeScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Expenses by Category',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('home.expenses_by_category'.tr(),
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
                 Icon(_showCategoryChart
                     ? Icons.keyboard_arrow_up
                     : Icons.keyboard_arrow_down),

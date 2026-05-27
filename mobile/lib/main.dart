@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -8,6 +9,7 @@ import 'services/backend_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await EasyLocalization.ensureInitialized();
 
   await Supabase.initialize(
     url: 'https://aclfelfqqbtuvowintvg.supabase.co',
@@ -27,7 +29,15 @@ Future<void> main() async {
     await Supabase.instance.client.auth.signOut();
   }
 
-  runApp(const MyApp());
+  runApp(
+    EasyLocalization(
+      supportedLocales: const [Locale('en'), Locale('pt', 'BR')],
+      path: 'assets/translations',
+      fallbackLocale: const Locale('en'),
+      saveLocale: true,
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -38,6 +48,9 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Accounting App',
       debugShowCheckedModeBanner: false,
+      localizationsDelegates: context.localizationDelegates,
+      supportedLocales: context.supportedLocales,
+      locale: context.locale,
       theme: ThemeData(
         fontFamily: 'Roboto',
         useMaterial3: true,

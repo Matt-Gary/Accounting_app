@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../services/backend_service.dart';
 import 'home_screen.dart';
@@ -35,6 +36,7 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     final isAdmin = _isSuperAdmin == true;
 
     // Screens that live in the IndexedStack. The "Add" nav button (index 2)
@@ -65,16 +67,18 @@ class _MainScreenState extends State<MainScreen> {
           }
         },
         items: [
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.dashboard), label: 'Dashboard'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.trending_up), label: 'Investments'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.add_circle, size: 32, color: Colors.black),
-              label: 'Add'),
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.dashboard), label: 'nav.dashboard'.tr()),
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.trending_up),
+              label: 'nav.investments'.tr()),
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.add_circle, size: 32, color: Colors.black),
+              label: 'nav.add'.tr()),
           if (isAdmin)
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.admin_panel_settings), label: 'Admin'),
+            BottomNavigationBarItem(
+                icon: const Icon(Icons.admin_panel_settings),
+                label: 'nav.admin'.tr()),
         ],
         selectedItemColor: Colors.black,
         unselectedItemColor: Colors.grey,

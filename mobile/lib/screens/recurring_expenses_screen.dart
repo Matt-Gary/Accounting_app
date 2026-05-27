@@ -1,6 +1,17 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../widgets/language_toggle.dart';
+
+/// Translates a category label — global categories use the categories.* JSON
+/// namespace; user-created categories keep their raw DB label.
+String _translateCategoryLabel(Category c) {
+  if (!c.isGlobal) return c.label;
+  final k = 'categories.${c.key}';
+  final t = k.tr();
+  return t == k ? c.label : t;
+}
 
 class RecurringExpensesScreen extends StatefulWidget {
   const RecurringExpensesScreen({super.key});
@@ -35,7 +46,8 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
       final familyData = results[1] as FamilyData;
 
       setState(() {
-        _recurringExpenses = rawRecurring.map((e) => RecurringExpense.fromJson(e)).toList();
+        _recurringExpenses =
+            rawRecurring.map((e) => RecurringExpense.fromJson(e)).toList();
         // Recurring is a per-person concept; hide the family-level virtual profile.
         _users = familyData.profiles.where((u) => !u.isVirtual).toList();
         _categories = familyData.categories;
@@ -44,7 +56,9 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading data: $e')),
+          SnackBar(
+              content: Text('recurring.load_error'
+                  .tr(namedArgs: {'error': e.toString()}))),
         );
       }
     } finally {
@@ -56,16 +70,16 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete Recurring Expense?'),
-        content: const Text(
-            'This will stop future expenses from being generated. Past expenses will remain.'),
+        title: Text('recurring.delete_title'.tr()),
+        content: Text('recurring.delete_body'.tr()),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
+              child: Text('common.cancel'.tr())),
           TextButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Delete', style: TextStyle(color: Colors.red))),
+              child: Text('common.delete'.tr(),
+                  style: const TextStyle(color: Colors.red))),
         ],
       ),
     );
@@ -77,7 +91,9 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error deleting: $e')),
+            SnackBar(
+                content: Text('recurring.delete_error'
+                    .tr(namedArgs: {'error': e.toString()}))),
           );
         }
       }
@@ -100,9 +116,11 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Recurring Expenses'),
+        title: Text('recurring.title'.tr()),
+        actions: const [LanguageToggle()],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showForm(),
@@ -111,18 +129,18 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _recurringExpenses.isEmpty
-              ? const Center(child: Text('No recurring expenses set up.'))
+              ? Center(child: Text('recurring.empty'.tr()))
               : ListView.builder(
                   itemCount: _recurringExpenses.length,
                   itemBuilder: (ctx, i) {
                     final item = _recurringExpenses[i];
-                    final cat = _categories
-                        .firstWhere((c) => c.key == item.categoryKey,
-                            orElse: () => Category(
-                                key: 'unknown',
-                                label: 'Unknown',
-                                sortOrder: 999))
-                        .label;
+                    final categoryObj = _categories.firstWhere(
+                        (c) => c.key == item.categoryKey,
+                        orElse: () => Category(
+                            key: 'unknown',
+                            label: 'Unknown',
+                            sortOrder: 999));
+                    final catLabel = _translateCategoryLabel(categoryObj);
                     final user = _users
                         .firstWhere((u) => u.id == item.userId,
                             orElse: () =>
@@ -135,9 +153,12 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                         foregroundColor: Colors.white,
                         child: Text(item.dayOfMonth.toString()),
                       ),
-                      title: Text(item.description ?? cat),
-                      subtitle:
-                          Text('$user • R\$ ${item.amount.toStringAsFixed(2)}'),
+                      title: Text(item.description ?? catLabel),
+                      subtitle: Text('recurring.item_subtitle'.tr(
+                          namedArgs: {
+                            'user': user,
+                            'amount': item.amount.toStringAsFixed(2)
+                          })),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -153,7 +174,11 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                                 _loadData();
                               } catch (e) {
                                 messenger.showSnackBar(
-                                  SnackBar(content: Text('Error: $e')),
+                                  SnackBar(
+                                      content: Text('recurring.error'.tr(
+                                          namedArgs: {
+                                            'error': e.toString()
+                                          }))),
                                 );
                               }
                             },
@@ -252,7 +277,8 @@ class _RecurringFormState extends State<RecurringForm> {
         amount: amount,
         categoryKey: _selectedCategory.key,
         paymentMethodId: _selectedPaymentMethod.id,
-        description: _descController.text.isEmpty ? null : _descController.text,
+        description:
+            _descController.text.isEmpty ? null : _descController.text,
         dayOfMonth: day,
         active: widget.expense?.active ?? true,
         createdAt: widget.expense?.createdAt,
@@ -271,8 +297,9 @@ class _RecurringFormState extends State<RecurringForm> {
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'recurring.error'.tr(namedArgs: {'error': e.toString()}))));
       }
     } finally {
       setState(() => _isLoading = false);
@@ -281,6 +308,7 @@ class _RecurringFormState extends State<RecurringForm> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     return Padding(
       padding: EdgeInsets.only(
           bottom: MediaQuery.of(context).viewInsets.bottom,
@@ -293,40 +321,44 @@ class _RecurringFormState extends State<RecurringForm> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Recurring Expense Details',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            Text('recurring.form_title'.tr(),
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
             TextFormField(
               controller: _amountController,
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                  labelText: 'Amount', prefixText: r'R$ '),
-              validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+              decoration: InputDecoration(
+                  labelText: 'recurring.amount'.tr(), prefixText: r'R$ '),
+              validator: (v) =>
+                  (v == null || v.isEmpty) ? 'common.required'.tr() : null,
             ),
             const SizedBox(height: 10),
             TextFormField(
               controller: _descController,
-              decoration: const InputDecoration(
-                  labelText: 'Description (e.g. Condominio)'),
+              decoration: InputDecoration(
+                  labelText: 'recurring.description'.tr()),
             ),
             const SizedBox(height: 10),
             TextFormField(
               controller: _dayController,
               keyboardType: TextInputType.number,
-              decoration:
-                  const InputDecoration(labelText: 'Day of Month (1-31)'),
+              decoration: InputDecoration(
+                  labelText: 'recurring.day_of_month'.tr()),
               validator: (v) {
-                if (v == null || v.isEmpty) return 'Required';
+                if (v == null || v.isEmpty) return 'common.required'.tr();
                 final n = int.tryParse(v);
-                if (n == null || n < 1 || n > 31) return 'Invalid day';
+                if (n == null || n < 1 || n > 31) {
+                  return 'recurring.invalid_day'.tr();
+                }
                 return null;
               },
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<UserProfile>(
               initialValue: _selectedUser,
-              decoration: const InputDecoration(labelText: 'User'),
+              decoration: InputDecoration(labelText: 'recurring.user'.tr()),
               items: widget.users
                   .map((u) => DropdownMenuItem(value: u, child: Text(u.name)))
                   .toList(),
@@ -335,16 +367,19 @@ class _RecurringFormState extends State<RecurringForm> {
             const SizedBox(height: 10),
             DropdownButtonFormField<Category>(
               initialValue: _selectedCategory,
-              decoration: const InputDecoration(labelText: 'Category'),
+              decoration:
+                  InputDecoration(labelText: 'recurring.category'.tr()),
               items: widget.categories
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c.label)))
+                  .map((c) => DropdownMenuItem(
+                      value: c, child: Text(_translateCategoryLabel(c))))
                   .toList(),
               onChanged: (c) => setState(() => _selectedCategory = c!),
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<PaymentMethod>(
               initialValue: _selectedPaymentMethod,
-              decoration: const InputDecoration(labelText: 'Payment Method'),
+              decoration: InputDecoration(
+                  labelText: 'recurring.payment_method'.tr()),
               items: widget.paymentMethods
                   .map((p) => DropdownMenuItem(value: p, child: Text(p.name)))
                   .toList(),
@@ -357,7 +392,7 @@ class _RecurringFormState extends State<RecurringForm> {
                 onPressed: _isLoading ? null : _save,
                 child: _isLoading
                     ? const CircularProgressIndicator()
-                    : const Text('Save'),
+                    : Text('common.save'.tr()),
               ),
             ),
             const SizedBox(height: 20),

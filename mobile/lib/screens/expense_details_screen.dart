@@ -1,7 +1,9 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/backend_service.dart';
 import 'edit_expense_screen.dart';
+import '../widgets/language_toggle.dart';
 
 class ExpenseDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> expense;
@@ -44,15 +46,12 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
       await showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text("Cannot Delete"),
-          content: const Text(
-              "This expense is auto-generated from a recurring definition. "
-              "It will reappear next time the dashboard loads. "
-              "To stop it permanently, deactivate the recurring expense in Recurring Expenses settings."),
+          title: Text('delete_expense.cannot_delete_title'.tr()),
+          content: Text('delete_expense.recurring_warning'.tr()),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text("OK"),
+              child: Text('common.ok'.tr()),
             ),
           ],
         ),
@@ -64,35 +63,35 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
     final String? scope = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Delete Expense"),
+        title: Text('delete_expense.title'.tr()),
         content: Text(isInstallment
-            ? "This expense is part of an installment series. What do you want to delete?"
-            : "Are you sure you want to delete this expense?"),
+            ? 'delete_expense.installment_body'.tr()
+            : 'delete_expense.confirm_body'.tr()),
         actions: isInstallment
             ? [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, null),
-                  child: const Text("Cancel"),
+                  child: Text('common.cancel'.tr()),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, 'this'),
-                  child: const Text("Only this installment"),
+                  child: Text('delete_expense.only_this'.tr()),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, 'future'),
-                  child: const Text("This + future",
-                      style: TextStyle(color: Colors.red)),
+                  child: Text('delete_expense.this_and_future'.tr(),
+                      style: const TextStyle(color: Colors.red)),
                 ),
               ]
             : [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, null),
-                  child: const Text("Cancel"),
+                  child: Text('common.cancel'.tr()),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, 'this'),
-                  child: const Text("Delete",
-                      style: TextStyle(color: Colors.red)),
+                  child: Text('common.delete'.tr(),
+                      style: const TextStyle(color: Colors.red)),
                 ),
               ],
       ),
@@ -103,14 +102,16 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
         await _backendService.deleteExpense(_expense['id'], scope: scope);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Expense deleted successfully')),
+            SnackBar(content: Text('delete_expense.success'.tr())),
           );
           Navigator.pop(context, true);
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e')),
+            SnackBar(
+                content: Text('common.error_with_message'
+                    .tr(namedArgs: {'error': e.toString()}))),
           );
         }
       }
@@ -119,22 +120,26 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     final double amount = (_expense['amount'] as num).toDouble();
-    final String category = _expense['category_label'] ?? 'Unknown';
-    final String method = _expense['payment_method_name'] ?? 'Unknown';
-    final String userName = _expense['user_name'] ?? 'Unknown';
+    final String category =
+        _expense['category_label'] ?? 'common.unknown'.tr();
+    final String method =
+        _expense['payment_method_name'] ?? 'common.unknown'.tr();
+    final String userName = _expense['user_name'] ?? 'common.unknown'.tr();
     final DateTime date = DateTime.parse(_expense['spent_at']);
     final String? comment = _expense['comment'];
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text('Expense Details',
-            style: TextStyle(color: Colors.black)),
+        title: Text('expense_details.title'.tr(),
+            style: const TextStyle(color: Colors.black)),
         backgroundColor: Colors.white,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black),
         actions: [
+          const LanguageToggle(),
           IconButton(
             icon: const Icon(Icons.edit_outlined, color: Colors.black),
             onPressed: _editExpense,
@@ -188,16 +193,18 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
                   borderRadius: BorderRadius.circular(16)),
               child: Column(
                 children: [
-                  _buildTile(Icons.person, 'User', userName),
+                  _buildTile(
+                      Icons.person, 'expense_details.user'.tr(), userName),
                   const Divider(height: 1),
-                  _buildTile(Icons.payment, 'Payment Method', method),
+                  _buildTile(Icons.payment,
+                      'expense_details.payment_method'.tr(), method),
                   const Divider(height: 1),
                   _buildTile(
                       Icons.comment,
-                      'Comment',
+                      'expense_details.comment'.tr(),
                       comment != null && comment.isNotEmpty
                           ? comment
-                          : 'No comment'),
+                          : 'expense_details.no_comment'.tr()),
                 ],
               ),
             ),
