@@ -194,7 +194,7 @@ def get_family_data():
         # mobile dropdown's `_users.first` default keeps the logged-in human.
         profiles_res = (
             client.from_("profiles")
-            .select("id, name, email, is_virtual")
+            .select("id, name, email, is_virtual, default_payment_method_id")
             .eq("family_id", g.family_id)
             .order("is_virtual", desc=False)
             .order("name")
@@ -202,7 +202,7 @@ def get_family_data():
         )
         profiles = profiles_res.data
     elif g.profile_id:
-        profile_res = client.from_("profiles").select("id, name, email, is_virtual").eq("id", g.profile_id).execute()
+        profile_res = client.from_("profiles").select("id, name, email, is_virtual, default_payment_method_id").eq("id", g.profile_id).execute()
         profiles = profile_res.data
 
     if g.family_id:
@@ -224,8 +224,31 @@ def get_family_data():
     return jsonify({
         "profiles": profiles,
         "categories": visible_cats,
-        "payment_methods": methods_res.data
+        "payment_methods": methods_res.data,
+        "current_profile_id": g.profile_id,
     })
+
+
+@app.route('/profile/favorite-payment-method', methods=['PATCH'])
+@require_auth
+def set_favorite_payment_method():
+    if not g.profile_id:
+        return jsonify({"error": "Profile not found"}), 404
+    data = request.json or {}
+    payment_method_id = data.get('payment_method_id')
+    client = get_pg()
+    if payment_method_id is not None:
+        pm = client.from_("payment_methods").select("family_id")\
+            .eq("id", payment_method_id).limit(1).execute().data
+        if not pm:
+            return jsonify({"error": "Payment method not found"}), 404
+        if pm[0].get('family_id') not in (None, g.family_id):
+            return jsonify({"error": "Payment method not accessible"}), 403
+    client.from_("profiles")\
+        .update({"default_payment_method_id": payment_method_id})\
+        .eq("id", g.profile_id).execute()
+    return jsonify({"default_payment_method_id": payment_method_id}), 200
+
 
 # CATEGORY MANAGEMENT ENDPOINTS
 

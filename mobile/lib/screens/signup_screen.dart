@@ -1,7 +1,9 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/backend_service.dart';
+import '../widgets/language_toggle.dart';
 
 enum _SignupMode { create, join }
 
@@ -86,13 +88,15 @@ class _SignupScreenState extends State<SignupScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text('Create Account'),
+        title: Text('signup.title'.tr()),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         elevation: 0,
+        actions: const [LanguageToggle()],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
@@ -102,16 +106,16 @@ class _SignupScreenState extends State<SignupScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SegmentedButton<_SignupMode>(
-                segments: const [
+                segments: [
                   ButtonSegment(
                     value: _SignupMode.create,
-                    label: Text('Start new family'),
-                    icon: Icon(Icons.family_restroom),
+                    label: Text('signup.start_new_family'.tr()),
+                    icon: const Icon(Icons.family_restroom),
                   ),
                   ButtonSegment(
                     value: _SignupMode.join,
-                    label: Text('Join with code'),
-                    icon: Icon(Icons.group_add),
+                    label: Text('signup.join_with_code'.tr()),
+                    icon: const Icon(Icons.group_add),
                   ),
                 ],
                 selected: {_mode},
@@ -120,30 +124,31 @@ class _SignupScreenState extends State<SignupScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _displayNameController,
-                decoration: const InputDecoration(
-                  labelText: 'Your Name',
-                  prefixIcon: Icon(Icons.person_outlined),
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: 'signup.your_name'.tr(),
+                  prefixIcon: const Icon(Icons.person_outlined),
+                  border: const OutlineInputBorder(),
                   filled: true,
                   fillColor: Colors.white,
                 ),
-                validator: (v) =>
-                    v == null || v.trim().isEmpty ? 'Name is required' : null,
+                validator: (v) => v == null || v.trim().isEmpty
+                    ? 'signup.name_required'.tr()
+                    : null,
               ),
               const SizedBox(height: 16),
               if (_mode == _SignupMode.create)
                 TextFormField(
                   controller: _familyNameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Family Name',
-                    hintText: 'e.g. The Smith Family',
-                    prefixIcon: Icon(Icons.family_restroom),
-                    border: OutlineInputBorder(),
+                  decoration: InputDecoration(
+                    labelText: 'signup.family_name'.tr(),
+                    hintText: 'signup.family_name_hint'.tr(),
+                    prefixIcon: const Icon(Icons.family_restroom),
+                    border: const OutlineInputBorder(),
                     filled: true,
                     fillColor: Colors.white,
                   ),
                   validator: (v) => v == null || v.trim().isEmpty
-                      ? 'Family name is required'
+                      ? 'signup.family_name_required'.tr()
                       : null,
                 )
               else
@@ -154,18 +159,18 @@ class _SignupScreenState extends State<SignupScreen> {
                     UpperCaseTextFormatter(),
                     LengthLimitingTextInputFormatter(8),
                   ],
-                  decoration: const InputDecoration(
-                    labelText: 'Invite Code',
-                    hintText: '8-character code from a family member',
-                    prefixIcon: Icon(Icons.vpn_key_outlined),
-                    border: OutlineInputBorder(),
+                  decoration: InputDecoration(
+                    labelText: 'signup.invite_code'.tr(),
+                    hintText: 'signup.invite_code_hint'.tr(),
+                    prefixIcon: const Icon(Icons.vpn_key_outlined),
+                    border: const OutlineInputBorder(),
                     filled: true,
                     fillColor: Colors.white,
                   ),
                   validator: (v) {
                     final t = v?.trim() ?? '';
-                    if (t.isEmpty) return 'Invite code is required';
-                    if (t.length != 8) return 'Code must be 8 characters';
+                    if (t.isEmpty) return 'signup.invite_code_required'.tr();
+                    if (t.length != 8) return 'signup.invite_code_length'.tr();
                     return null;
                   },
                 ),
@@ -173,22 +178,23 @@ class _SignupScreenState extends State<SignupScreen> {
               TextFormField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  labelText: 'Email',
-                  prefixIcon: Icon(Icons.email_outlined),
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: 'login.email'.tr(),
+                  prefixIcon: const Icon(Icons.email_outlined),
+                  border: const OutlineInputBorder(),
                   filled: true,
                   fillColor: Colors.white,
                 ),
-                validator: (v) =>
-                    v == null || v.isEmpty ? 'Email is required' : null,
+                validator: (v) => v == null || v.isEmpty
+                    ? 'login.email_required'.tr()
+                    : null,
               ),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _passwordController,
                 obscureText: _obscurePassword,
                 decoration: InputDecoration(
-                  labelText: 'Password',
+                  labelText: 'login.password'.tr(),
                   prefixIcon: const Icon(Icons.lock_outlined),
                   border: const OutlineInputBorder(),
                   filled: true,
@@ -202,8 +208,12 @@ class _SignupScreenState extends State<SignupScreen> {
                   ),
                 ),
                 validator: (v) {
-                  if (v == null || v.isEmpty) return 'Password is required';
-                  if (v.length < 6) return 'Password must be at least 6 characters';
+                  if (v == null || v.isEmpty) {
+                    return 'login.password_required'.tr();
+                  }
+                  if (v.length < 6) {
+                    return 'signup.password_min_length'.tr();
+                  }
                   return null;
                 },
               ),
@@ -211,16 +221,16 @@ class _SignupScreenState extends State<SignupScreen> {
               TextFormField(
                 controller: _confirmPasswordController,
                 obscureText: _obscurePassword,
-                decoration: const InputDecoration(
-                  labelText: 'Confirm Password',
-                  prefixIcon: Icon(Icons.lock_outlined),
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: 'signup.confirm_password'.tr(),
+                  prefixIcon: const Icon(Icons.lock_outlined),
+                  border: const OutlineInputBorder(),
                   filled: true,
                   fillColor: Colors.white,
                 ),
                 validator: (v) {
                   if (v != _passwordController.text) {
-                    return 'Passwords do not match';
+                    return 'signup.passwords_mismatch'.tr();
                   }
                   return null;
                 },
@@ -243,8 +253,8 @@ class _SignupScreenState extends State<SignupScreen> {
                           height: 20,
                           child: CircularProgressIndicator(
                               strokeWidth: 2, color: Colors.white))
-                      : const Text('Create Account',
-                          style: TextStyle(fontSize: 16)),
+                      : Text('signup.create_account'.tr(),
+                          style: const TextStyle(fontSize: 16)),
                 ),
               ),
             ],

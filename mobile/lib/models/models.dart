@@ -70,12 +70,14 @@ class UserProfile {
   final String name;
   final String? email;
   final bool isVirtual;
+  final String? defaultPaymentMethodId;
 
   UserProfile({
     required this.id,
     required this.name,
     this.email,
     this.isVirtual = false,
+    this.defaultPaymentMethodId,
   });
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
@@ -84,6 +86,7 @@ class UserProfile {
       name: json['name'],
       email: json['email'] as String?,
       isVirtual: (json['is_virtual'] as bool?) ?? false,
+      defaultPaymentMethodId: json['default_payment_method_id'] as String?,
     );
   }
 

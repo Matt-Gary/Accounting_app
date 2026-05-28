@@ -1,6 +1,8 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../widgets/language_toggle.dart';
 
 class AddInvestmentScreen extends StatefulWidget {
   final UserProfile? currentUser;
@@ -64,8 +66,8 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
       final familyData = await _backendService.getFamilyData();
       if (familyData.profiles.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('No user profile found')));
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('add_investment.no_profile'.tr())));
         }
         return;
       }
@@ -103,25 +105,33 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Saved!')));
+            .showSnackBar(SnackBar(content: Text('add_investment.saved'.tr())));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'add_investment.error'.tr(namedArgs: {'error': e.toString()}))));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  bool get _isFixedValueType =>
+      _selectedType == 'bond' ||
+      _selectedType == 'cash' ||
+      _selectedType == 'other';
+
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.investmentToEdit == null
-            ? 'Add Investment'
-            : 'Edit Investment'),
+            ? 'add_investment.title_add'.tr()
+            : 'add_investment.title_edit'.tr()),
+        actions: const [LanguageToggle()],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -134,8 +144,9 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                   Expanded(
                     child: DropdownButtonFormField<String>(
                       initialValue: _selectedType,
-                      decoration: const InputDecoration(
-                          labelText: 'Type', border: OutlineInputBorder()),
+                      decoration: InputDecoration(
+                          labelText: 'add_investment.type'.tr(),
+                          border: const OutlineInputBorder()),
                       items: _types
                           .map((t) => DropdownMenuItem(
                               value: t, child: Text(t.toUpperCase())))
@@ -147,8 +158,9 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                   Expanded(
                     child: DropdownButtonFormField<String>(
                       initialValue: _selectedCurrency,
-                      decoration: const InputDecoration(
-                          labelText: 'Currency', border: OutlineInputBorder()),
+                      decoration: InputDecoration(
+                          labelText: 'add_investment.currency'.tr(),
+                          border: const OutlineInputBorder()),
                       items: _currencies
                           .map(
                               (c) => DropdownMenuItem(value: c, child: Text(c)))
@@ -162,27 +174,26 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _nameController,
-                decoration: const InputDecoration(
-                    labelText: 'Name (e.g. Apple, Bitcoin, Treasury)',
-                    border: OutlineInputBorder()),
-                validator: (v) => v == null || v.isEmpty ? 'Required' : null,
+                decoration: InputDecoration(
+                    labelText: 'add_investment.name'.tr(),
+                    border: const OutlineInputBorder()),
+                validator: (v) =>
+                    v == null || v.isEmpty ? 'common.required'.tr() : null,
               ),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _symbolController,
                 decoration: InputDecoration(
-                  labelText: 'Symbol (e.g. AAPL, BTC-USD)',
+                  labelText: 'add_investment.symbol'.tr(),
                   border: const OutlineInputBorder(),
-                  helperText: (_selectedType == 'bond' ||
-                          _selectedType == 'cash' ||
-                          _selectedType == 'other')
-                      ? 'Optional'
-                      : 'Required for automatic pricing',
+                  helperText: _isFixedValueType
+                      ? 'add_investment.symbol_optional'.tr()
+                      : 'add_investment.symbol_required_hint'.tr(),
                 ),
                 validator: (v) {
                   if (_selectedType == 'stock' || _selectedType == 'crypto') {
                     if (v == null || v.isEmpty) {
-                      return 'Required for Stocks/Crypto';
+                      return 'add_investment.symbol_required_error'.tr();
                     }
                   }
                   return null;
@@ -194,29 +205,26 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 decoration: InputDecoration(
-                  labelText: (_selectedType == 'bond' ||
-                          _selectedType == 'cash' ||
-                          _selectedType == 'other')
-                      ? 'Current Value'
-                      : 'Quantity',
+                  labelText: _isFixedValueType
+                      ? 'add_investment.current_value'.tr()
+                      : 'add_investment.quantity'.tr(),
                   border: const OutlineInputBorder(),
-                  helperText: (_selectedType == 'bond' ||
-                          _selectedType == 'cash' ||
-                          _selectedType == 'other')
-                      ? 'Enter the total monetary value'
-                      : 'Number of shares/units',
+                  helperText: _isFixedValueType
+                      ? 'add_investment.value_hint'.tr()
+                      : 'add_investment.quantity_hint'.tr(),
                 ),
-                validator: (v) => v == null || v.isEmpty ? 'Required' : null,
+                validator: (v) =>
+                    v == null || v.isEmpty ? 'common.required'.tr() : null,
               ),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _costBasisController,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                    labelText: 'Total Cost Basis (Optional)',
-                    border: OutlineInputBorder(),
-                    helperText: 'Used to calculate Profit/Loss'),
+                decoration: InputDecoration(
+                    labelText: 'add_investment.cost_basis'.tr(),
+                    border: const OutlineInputBorder(),
+                    helperText: 'add_investment.cost_basis_hint'.tr()),
               ),
               const SizedBox(height: 32),
               SizedBox(
@@ -229,7 +237,7 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                       foregroundColor: Colors.white),
                   child: _isLoading
                       ? const CircularProgressIndicator(color: Colors.white)
-                      : const Text('Save'),
+                      : Text('common.save'.tr()),
                 ),
               ),
             ],

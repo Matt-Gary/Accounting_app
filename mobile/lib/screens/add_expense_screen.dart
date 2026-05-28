@@ -1,7 +1,9 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../widgets/language_toggle.dart';
 
 class AddExpenseScreen extends StatefulWidget {
   const AddExpenseScreen({super.key});
@@ -28,6 +30,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
   List<UserProfile> _users = [];
   List<Category> _categories = [];
   List<PaymentMethod> _paymentMethods = [];
+  String? _favoritePaymentMethodId;
 
   @override
   void initState() {
@@ -48,15 +51,25 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         _paymentMethods = familyData.paymentMethods;
         if (_users.isNotEmpty) _selectedUser = _users.first;
         if (_paymentMethods.isNotEmpty) {
-          _selectedPaymentMethod = _paymentMethods.first;
+          final currentProfile = familyData.profiles.firstWhere(
+            (p) => p.id == familyData.currentProfileId,
+            orElse: () => familyData.profiles.first,
+          );
+          _favoritePaymentMethodId = currentProfile.defaultPaymentMethodId;
+          final favId = _favoritePaymentMethodId;
+          _selectedPaymentMethod = favId != null
+              ? _paymentMethods.firstWhere(
+                  (pm) => pm.id == favId,
+                  orElse: () => _paymentMethods.first,
+                )
+              : _paymentMethods.first;
         }
-        _loadError = _users.isEmpty
-            ? 'No users found for this family. Try signing out and back in.'
-            : null;
+        _loadError = _users.isEmpty ? 'add_expense.no_users'.tr() : null;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loadError = 'Failed to load form data: $e');
+      setState(() => _loadError =
+          'add_expense.load_failed'.tr(namedArgs: {'error': e.toString()}));
     }
   }
 
@@ -68,22 +81,25 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        title: const Text('First installment month'),
+        title: Text('add_expense.first_installment_title'.tr()),
         content: Text(
-          'When should installment 1 of $installments be billed?',
+          'add_expense.first_installment_body'
+              .tr(namedArgs: {'count': installments.toString()}),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('Cancel'),
+            child: Text('common.cancel'.tr()),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Next month ($nextMonthLabel)'),
+            child: Text('add_expense.next_month'
+                .tr(namedArgs: {'month': nextMonthLabel})),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text('This month ($thisMonthLabel)'),
+            child: Text('add_expense.this_month'
+                .tr(namedArgs: {'month': thisMonthLabel})),
           ),
         ],
       ),
@@ -96,7 +112,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         _selectedCategory == null ||
         _selectedPaymentMethod == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select all required fields')),
+        SnackBar(content: Text('add_expense.select_all_fields'.tr())),
       );
       return;
     }
@@ -184,14 +200,16 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Expense added successfully!')),
+          SnackBar(content: Text('add_expense.added_success'.tr())),
         );
         Navigator.pop(context); // Go back home
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error adding expense: $e')),
+          SnackBar(
+              content: Text('add_expense.add_failed'
+                  .tr(namedArgs: {'error': e.toString()}))),
         );
       }
     } finally {
@@ -201,13 +219,16 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text('New Expense', style: TextStyle(color: Colors.black)),
+        title: Text('add_expense.title'.tr(),
+            style: const TextStyle(color: Colors.black)),
         backgroundColor: Colors.white,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black),
+        actions: const [LanguageToggle()],
       ),
       body: _users.isEmpty
           ? Center(
@@ -227,7 +248,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                 setState(() => _loadError = null);
                                 _loadData();
                               },
-                              child: const Text('Retry')),
+                              child: Text('common.retry'.tr())),
                         ],
                       ),
                     ),
@@ -249,8 +270,8 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Amount',
-                                style: TextStyle(color: Colors.grey)),
+                            Text('add_expense.amount'.tr(),
+                                style: const TextStyle(color: Colors.grey)),
                             TextFormField(
                               controller: _amountController,
                               keyboardType:
@@ -265,7 +286,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                               ),
                               validator: (value) {
                                 if (value == null || value.isEmpty) {
-                                  return 'Required';
+                                  return 'common.required'.tr();
                                 }
                                 return null;
                               },
@@ -277,14 +298,14 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                     const SizedBox(height: 20),
 
                     // Details Form
-                    const Text('Details',
-                        style: TextStyle(
+                    Text('add_expense.details'.tr(),
+                        style: const TextStyle(
                             fontSize: 18, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
 
                     // User Dropdown
                     _buildDropdown<UserProfile>(
-                      label: 'User',
+                      label: 'add_expense.user'.tr(),
                       value: _selectedUser,
                       items: _users,
                       itemLabel: (u) => u.name,
@@ -293,28 +314,41 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
 
                     // Category Dropdown
                     _buildDropdown<Category>(
-                      label: 'Category',
+                      label: 'add_expense.category'.tr(),
                       value: _selectedCategory,
                       items: _categories,
-                      itemLabel: (c) => c.label,
+                      itemLabel: (c) {
+                        if (!c.isGlobal) return c.label;
+                        final k = 'categories.${c.key}';
+                        final t = k.tr();
+                        return t == k ? c.label : t;
+                      },
                       onChanged: (val) =>
                           setState(() => _selectedCategory = val),
                     ),
 
-                    // Payment Method Dropdown
-                    _buildDropdown<PaymentMethod>(
-                      label: 'Payment Method',
-                      value: _selectedPaymentMethod,
-                      items: _paymentMethods,
-                      itemLabel: (p) => p.name,
-                      onChanged: (val) =>
-                          setState(() => _selectedPaymentMethod = val),
+                    // Payment Method Picker
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('add_expense.payment_method'.tr()),
+                      subtitle: Text(_selectedPaymentMethod?.name ?? '—'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_selectedPaymentMethod?.id ==
+                              _favoritePaymentMethodId)
+                            const Icon(Icons.star,
+                                color: Colors.amber, size: 18),
+                          const Icon(Icons.arrow_drop_down),
+                        ],
+                      ),
+                      onTap: _showPaymentMethodPicker,
                     ),
 
                     // Date Picker
                     ListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text('Date'),
+                      title: Text('add_expense.date'.tr()),
                       subtitle:
                           Text(DateFormat('EEE, MMM d, yyyy').format(_spentAt)),
                       trailing: const Icon(Icons.calendar_today),
@@ -333,9 +367,9 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                     // Comment Input
                     TextFormField(
                       controller: _commentController,
-                      decoration: const InputDecoration(
-                        labelText: 'Comment (Optional)',
-                        border: OutlineInputBorder(),
+                      decoration: InputDecoration(
+                        labelText: 'add_expense.comment_optional'.tr(),
+                        border: const OutlineInputBorder(),
                       ),
                       maxLines: 2,
                     ),
@@ -345,11 +379,11 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                     TextFormField(
                       controller: _installmentsController,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: 'Installments (Optional)',
-                        hintText: 'e.g. 5',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.repeat),
+                      decoration: InputDecoration(
+                        labelText: 'add_expense.installments_optional'.tr(),
+                        hintText: 'add_expense.installments_hint'.tr(),
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.repeat),
                       ),
                     ),
 
@@ -369,8 +403,8 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                         child: _isLoading
                             ? const CircularProgressIndicator(
                                 color: Colors.white)
-                            : const Text('Save Expense',
-                                style: TextStyle(
+                            : Text('add_expense.save'.tr(),
+                                style: const TextStyle(
                                     fontSize: 18, color: Colors.white)),
                       ),
                     ),
@@ -378,6 +412,54 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                 ),
               ),
             ),
+    );
+  }
+
+  void _showPaymentMethodPicker() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) => ListView(
+          children: _paymentMethods.map((pm) {
+            final isFav = pm.id == _favoritePaymentMethodId;
+            final isSelected = pm.id == _selectedPaymentMethod?.id;
+            return ListTile(
+              leading: Icon(
+                isSelected ? Icons.check_circle : Icons.circle_outlined,
+                color: isSelected ? Theme.of(ctx).colorScheme.primary : null,
+              ),
+              title: Text(pm.name),
+              onTap: () {
+                setState(() => _selectedPaymentMethod = pm);
+                Navigator.pop(ctx);
+              },
+              trailing: IconButton(
+                icon: Icon(
+                  isFav ? Icons.star : Icons.star_border,
+                  color: isFav ? Colors.amber : null,
+                ),
+                onPressed: () async {
+                  final newFav = isFav ? null : pm.id;
+                  final previous = _favoritePaymentMethodId;
+                  setState(() => _favoritePaymentMethodId = newFav);
+                  setLocal(() {});
+                  try {
+                    await _backendService.setFavoritePaymentMethod(newFav);
+                  } catch (e) {
+                    setState(() => _favoritePaymentMethodId = previous);
+                    setLocal(() {});
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e')),
+                      );
+                    }
+                  }
+                },
+              ),
+            );
+          }).toList(),
+        ),
+      ),
     );
   }
 
@@ -405,7 +487,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
           );
         }).toList(),
         onChanged: onChanged,
-        validator: (value) => value == null ? 'Required' : null,
+        validator: (value) => value == null ? 'common.required'.tr() : null,
       ),
     );
   }
