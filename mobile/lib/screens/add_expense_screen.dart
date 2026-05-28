@@ -30,6 +30,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
   List<UserProfile> _users = [];
   List<Category> _categories = [];
   List<PaymentMethod> _paymentMethods = [];
+  String? _favoritePaymentMethodId;
 
   @override
   void initState() {
@@ -50,7 +51,18 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         _paymentMethods = familyData.paymentMethods;
         if (_users.isNotEmpty) _selectedUser = _users.first;
         if (_paymentMethods.isNotEmpty) {
-          _selectedPaymentMethod = _paymentMethods.first;
+          final currentProfile = familyData.profiles.firstWhere(
+            (p) => p.id == familyData.currentProfileId,
+            orElse: () => familyData.profiles.first,
+          );
+          _favoritePaymentMethodId = currentProfile.defaultPaymentMethodId;
+          final favId = _favoritePaymentMethodId;
+          _selectedPaymentMethod = favId != null
+              ? _paymentMethods.firstWhere(
+                  (pm) => pm.id == favId,
+                  orElse: () => _paymentMethods.first,
+                )
+              : _paymentMethods.first;
         }
         _loadError = _users.isEmpty ? 'add_expense.no_users'.tr() : null;
       });
@@ -315,14 +327,22 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                           setState(() => _selectedCategory = val),
                     ),
 
-                    // Payment Method Dropdown
-                    _buildDropdown<PaymentMethod>(
-                      label: 'add_expense.payment_method'.tr(),
-                      value: _selectedPaymentMethod,
-                      items: _paymentMethods,
-                      itemLabel: (p) => p.name,
-                      onChanged: (val) =>
-                          setState(() => _selectedPaymentMethod = val),
+                    // Payment Method Picker
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('add_expense.payment_method'.tr()),
+                      subtitle: Text(_selectedPaymentMethod?.name ?? '—'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_selectedPaymentMethod?.id ==
+                              _favoritePaymentMethodId)
+                            const Icon(Icons.star,
+                                color: Colors.amber, size: 18),
+                          const Icon(Icons.arrow_drop_down),
+                        ],
+                      ),
+                      onTap: _showPaymentMethodPicker,
                     ),
 
                     // Date Picker
@@ -392,6 +412,54 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                 ),
               ),
             ),
+    );
+  }
+
+  void _showPaymentMethodPicker() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) => ListView(
+          children: _paymentMethods.map((pm) {
+            final isFav = pm.id == _favoritePaymentMethodId;
+            final isSelected = pm.id == _selectedPaymentMethod?.id;
+            return ListTile(
+              leading: Icon(
+                isSelected ? Icons.check_circle : Icons.circle_outlined,
+                color: isSelected ? Theme.of(ctx).colorScheme.primary : null,
+              ),
+              title: Text(pm.name),
+              onTap: () {
+                setState(() => _selectedPaymentMethod = pm);
+                Navigator.pop(ctx);
+              },
+              trailing: IconButton(
+                icon: Icon(
+                  isFav ? Icons.star : Icons.star_border,
+                  color: isFav ? Colors.amber : null,
+                ),
+                onPressed: () async {
+                  final newFav = isFav ? null : pm.id;
+                  final previous = _favoritePaymentMethodId;
+                  setState(() => _favoritePaymentMethodId = newFav);
+                  setLocal(() {});
+                  try {
+                    await _backendService.setFavoritePaymentMethod(newFav);
+                  } catch (e) {
+                    setState(() => _favoritePaymentMethodId = previous);
+                    setLocal(() {});
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e')),
+                      );
+                    }
+                  }
+                },
+              ),
+            );
+          }).toList(),
+        ),
+      ),
     );
   }
 

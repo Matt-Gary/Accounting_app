@@ -379,6 +379,19 @@ class BackendService {
     _familyDataCacheTime = null;
   }
 
+  Future<void> setFavoritePaymentMethod(String? paymentMethodId) async {
+    final uri = Uri.parse('$baseUrl/profile/favorite-payment-method');
+    final response = await _withAuth(
+      (h) => http.patch(uri, headers: h,
+          body: jsonEncode({'payment_method_id': paymentMethodId})),
+      json: true,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to set favorite payment method: ${response.body}');
+    }
+    clearFamilyDataCache();
+  }
+
   Future<FamilyData> getFamilyData({bool forceRefresh = false}) async {
     if (!forceRefresh &&
         _familyDataCache != null &&
@@ -785,11 +798,13 @@ class FamilyData {
   final List<UserProfile> profiles;
   final List<Category> categories;
   final List<PaymentMethod> paymentMethods;
+  final String? currentProfileId;
 
   FamilyData({
     required this.profiles,
     required this.categories,
     required this.paymentMethods,
+    this.currentProfileId,
   });
 
   factory FamilyData.fromJson(Map<String, dynamic> json) {
@@ -806,6 +821,7 @@ class FamilyData {
               ?.map((e) => PaymentMethod.fromJson(e))
               .toList() ??
           [],
+      currentProfileId: json['current_profile_id'] as String?,
     );
   }
 }
