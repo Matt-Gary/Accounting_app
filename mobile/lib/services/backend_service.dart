@@ -574,7 +574,7 @@ class BackendService {
 
   // ============= APP UPDATE =============
 
-  Future<Map<String, dynamic>?> checkForUpdate() async {
+  Future<Map<String, dynamic>> checkForUpdate() async {
     final uri = Uri.parse('$baseUrl/app/version');
     try {
       final response = await http.get(uri).timeout(const Duration(seconds: 10));
