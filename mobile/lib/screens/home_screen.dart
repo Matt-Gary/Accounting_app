@@ -67,14 +67,6 @@ class HomeScreenState extends State<HomeScreen> {
     );
     try {
       final versionData = await _backendService.checkForUpdate();
-      if (versionData == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('update.no_server'.tr())),
-          );
-        }
-        return;
-      }
       final packageInfo = await PackageInfo.fromPlatform();
       final currentCode = int.tryParse(packageInfo.buildNumber) ?? 1;
       final remoteCode = versionData['version_code'] as int? ?? 1;
