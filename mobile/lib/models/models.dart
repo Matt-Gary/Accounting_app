@@ -259,9 +259,13 @@ class Investment {
   final double quantity;
   final double costBasis;
   final String currency; // 'USD' or 'BRL'
+  final String? account; // grouping label, e.g. "Interactive Brokers"
+  final bool investable; // true = investing portfolio, false = reserve
 
   // Enriched fields from backend
   final double? currentPrice;
+  final double? avgPrice; // derived: cost_basis / quantity
+  final double? dailyChangePct; // today's price move % (stock/crypto)
   final double? currentValueNative;
   final double? currentValueUsd;
   final double? currentValueBrl;
@@ -277,7 +281,11 @@ class Investment {
     required this.quantity,
     this.costBasis = 0.0,
     this.currency = 'BRL',
+    this.account,
+    this.investable = true,
     this.currentPrice,
+    this.avgPrice,
+    this.dailyChangePct,
     this.currentValueNative,
     this.currentValueUsd,
     this.currentValueBrl,
@@ -295,7 +303,11 @@ class Investment {
       quantity: (json['quantity'] as num? ?? 0.0).toDouble(),
       costBasis: (json['cost_basis'] as num? ?? 0.0).toDouble(),
       currency: json['currency'] ?? 'BRL',
+      account: json['account'],
+      investable: json['investable'] as bool? ?? true,
       currentPrice: (json['current_price'] as num?)?.toDouble(),
+      avgPrice: (json['avg_price'] as num?)?.toDouble(),
+      dailyChangePct: (json['daily_change_pct'] as num?)?.toDouble(),
       currentValueNative: (json['current_value_native'] as num?)?.toDouble(),
       currentValueUsd: (json['current_value_usd'] as num?)?.toDouble(),
       currentValueBrl: (json['current_value_brl'] as num?)?.toDouble(),
@@ -314,6 +326,8 @@ class Investment {
       'quantity': quantity,
       'cost_basis': costBasis,
       'currency': currency,
+      'account': account,
+      'investable': investable,
     };
   }
 }

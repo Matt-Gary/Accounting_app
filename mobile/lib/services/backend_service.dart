@@ -625,12 +625,20 @@ class BackendService {
 class PortfolioData {
   final double totalValueUsd;
   final double totalValueBrl;
+  final double investingTotalUsd;
+  final double investingTotalBrl;
+  final double reservesTotalUsd;
+  final double reservesTotalBrl;
   final double exchangeRate;
   final List<Investment> investments;
 
   PortfolioData(
       {required this.totalValueUsd,
       required this.totalValueBrl,
+      required this.investingTotalUsd,
+      required this.investingTotalBrl,
+      required this.reservesTotalUsd,
+      required this.reservesTotalBrl,
       required this.exchangeRate,
       required this.investments});
 
@@ -638,6 +646,12 @@ class PortfolioData {
     return PortfolioData(
       totalValueUsd: (json['total_value_usd'] as num? ?? 0.0).toDouble(),
       totalValueBrl: (json['total_value_brl'] as num? ?? 0.0).toDouble(),
+      investingTotalUsd:
+          (json['investing_total_usd'] as num? ?? 0.0).toDouble(),
+      investingTotalBrl:
+          (json['investing_total_brl'] as num? ?? 0.0).toDouble(),
+      reservesTotalUsd: (json['reserves_total_usd'] as num? ?? 0.0).toDouble(),
+      reservesTotalBrl: (json['reserves_total_brl'] as num? ?? 0.0).toDouble(),
       exchangeRate: (json['exchange_rate_usd_brl'] as num? ?? 0.0).toDouble(),
       investments: (json['investments'] as List<dynamic>?)
               ?.map((e) => Investment.fromJson(e))
