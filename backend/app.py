@@ -457,7 +457,7 @@ def edit_investment(inv_id):
     data = request.json
     try:
         # Filter allowed fields
-        allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type', 'currency']
+        allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type', 'currency', 'account', 'investable']
         updates = {k: v for k, v in data.items() if k in allowed}
 
         res = update_investment(inv_id, g.profile_id, updates, family_id=g.family_id)

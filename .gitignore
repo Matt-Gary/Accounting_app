@@ -12,3 +12,4 @@ __pycache__
 .claude/skills.json
 CLAUDE.md
 SaaSproject.md
+backend/migrations/add_investment_accounts.sql

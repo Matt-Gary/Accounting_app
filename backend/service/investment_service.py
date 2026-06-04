@@ -51,8 +51,9 @@ def fetch_portfolio(user_id, family_id=None):
     for r in rates_map.values():
         symbols.append(r)
     
-    # 3. Fetch current prices
+    # 3. Fetch current prices (and previous close for daily change %)
     prices = {}
+    prev_closes = {}
     if symbols:
         tickers_str = " ".join(set(symbols)) # Unique
         try:
@@ -62,22 +63,33 @@ def fetch_portfolio(user_id, family_id=None):
                     ticker = data.tickers[sym]
                     # Try fast_info first, then history
                     price = 0.0
+                    prev_close = 0.0
                     if hasattr(ticker, 'fast_info'):
                         # safe access
                         try:
                             price = ticker.fast_info['last_price']
                         except:
                             pass
-                    
-                    if price == 0.0:
-                        hist = ticker.history(period="1d")
+                        try:
+                            prev_close = ticker.fast_info['previous_close']
+                        except:
+                            pass
+
+                    if price == 0.0 or prev_close == 0.0:
+                        hist = ticker.history(period="2d")
                         if not hist.empty:
-                            price = hist['Close'].iloc[-1]
-                            
+                            if price == 0.0:
+                                price = hist['Close'].iloc[-1]
+                            # previous close = second-to-last row when available
+                            if prev_close == 0.0 and len(hist) >= 2:
+                                prev_close = hist['Close'].iloc[-2]
+
                     prices[sym] = price
+                    prev_closes[sym] = prev_close
                 except Exception as e:
                     print(f"Error fetching {sym}: {e}")
                     prices[sym] = 0.0
+                    prev_closes[sym] = 0.0
         except Exception as e:
             print(f"Batch fetch error: {e}")
 
@@ -108,21 +120,29 @@ def fetch_portfolio(user_id, family_id=None):
     # 4. Calculate Values
     total_val_usd = 0.0
     total_val_brl = 0.0
+    investing_val_usd = 0.0
+    investing_val_brl = 0.0
+    reserves_val_usd = 0.0
+    reserves_val_brl = 0.0
     enriched_investments = []
-    
+
     for inv in investments:
         itype = inv['type']
         qty = float(inv['quantity'])
         inv_currency = inv.get('currency', 'BRL') # Default BRL
-        
+
         current_price = 0.0
-        
+        daily_change_pct = 0.0
+
         if itype == 'cash':
             current_price = 1.0
             val_in_native = qty
         elif itype in ('stock', 'crypto') and inv['symbol']:
             current_price = prices.get(inv['symbol'], 0.0)
             val_in_native = qty * current_price
+            prev_close = prev_closes.get(inv['symbol'], 0.0)
+            if prev_close and prev_close > 0:
+                daily_change_pct = (current_price - prev_close) / prev_close * 100
         else:
             # Bonds / Other
             val_in_native = qty # Assuming qty holds value
@@ -146,21 +166,37 @@ def fetch_portfolio(user_id, family_id=None):
         cost_basis = float(inv.get('cost_basis') or 0.0)
         pnl = val_in_native - cost_basis
         pnl_pct = (pnl / cost_basis * 100) if cost_basis > 0 else 0.0
-        
+        # Average purchase price per share (derived from total cost basis)
+        avg_price = (cost_basis / qty) if qty > 0 else 0.0
+
         inv['current_price'] = current_price
+        inv['avg_price'] = avg_price
+        inv['daily_change_pct'] = daily_change_pct
         inv['current_value_native'] = val_in_native
         inv['current_value_usd'] = val_usd
         inv['current_value_brl'] = val_brl
         inv['pnl'] = pnl
         inv['pnl_pct'] = pnl_pct
-        
+
         total_val_usd += val_usd
         total_val_brl += val_brl
+        # Split into investing portfolio vs reserves. Default investable=True so
+        # legacy rows (and all stock/crypto) count toward the investing portfolio.
+        if inv.get('investable', True):
+            investing_val_usd += val_usd
+            investing_val_brl += val_brl
+        else:
+            reserves_val_usd += val_usd
+            reserves_val_brl += val_brl
         enriched_investments.append(inv)
-        
+
     result = {
         "total_value_usd": total_val_usd,
         "total_value_brl": total_val_brl,
+        "investing_total_usd": investing_val_usd,
+        "investing_total_brl": investing_val_brl,
+        "reserves_total_usd": reserves_val_usd,
+        "reserves_total_brl": reserves_val_brl,
         "exchange_rate_usd_brl": usd_to_brl,
         "exchange_rate_eur_usd": eur_to_usd,
         "exchange_rate_usd_pln": usd_to_pln,
@@ -180,6 +216,8 @@ def add_investment(user_id, data, family_id=None):
         "quantity": data['quantity'],
         "cost_basis": data.get('cost_basis', 0),
         "currency": data.get('currency', 'BRL'),
+        "account": data.get('account'),
+        "investable": data.get('investable', True),
     }
     if family_id:
         payload["family_id"] = family_id

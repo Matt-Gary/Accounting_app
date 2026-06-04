@@ -7,11 +7,13 @@ import '../widgets/language_toggle.dart';
 class AddInvestmentScreen extends StatefulWidget {
   final UserProfile? currentUser;
   final Investment? investmentToEdit;
+  final List<Investment> existingInvestments;
 
   const AddInvestmentScreen({
     super.key,
     this.currentUser,
     this.investmentToEdit,
+    this.existingInvestments = const [],
   });
 
   @override
@@ -26,7 +28,8 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
   final _nameController = TextEditingController();
   final _symbolController = TextEditingController();
   final _quantityController = TextEditingController();
-  final _costBasisController = TextEditingController();
+  final _avgPriceController = TextEditingController();
+  final _accountController = TextEditingController();
 
   String _selectedType = 'stock';
   final List<String> _types = ['stock', 'crypto', 'bond', 'cash', 'other'];
@@ -34,17 +37,41 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
   String _selectedCurrency = 'BRL';
   final List<String> _currencies = ['BRL', 'USD', 'EUR', 'PLN'];
 
+  bool _investable = true;
+
+  // Distinct account labels already in use + their last-seen investable flag,
+  // used for suggestion chips and to prefill the toggle when an account repeats.
+  late final List<String> _accountSuggestions;
+  late final Map<String, bool> _accountInvestable;
+
   @override
   void initState() {
     super.initState();
+
+    _accountInvestable = {};
+    final seen = <String>[];
+    for (final inv in widget.existingInvestments) {
+      final acc = inv.account?.trim() ?? '';
+      if (acc.isEmpty) continue;
+      if (!seen.contains(acc)) seen.add(acc);
+      _accountInvestable[acc] = inv.investable;
+    }
+    _accountSuggestions = seen;
+
     if (widget.investmentToEdit != null) {
       final inv = widget.investmentToEdit!;
       _nameController.text = inv.name;
       _symbolController.text = inv.symbol ?? '';
       _quantityController.text = inv.quantity.toString();
-      _costBasisController.text = inv.costBasis.toString();
       _selectedType = inv.type;
       _selectedCurrency = inv.currency;
+      _accountController.text = inv.account ?? '';
+      _investable = inv.investable;
+      // Derive avg price per share from the stored total cost basis.
+      if (inv.quantity > 0) {
+        _avgPriceController.text =
+            (inv.costBasis / inv.quantity).toStringAsFixed(2);
+      }
     }
   }
 
@@ -53,9 +80,12 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
     _nameController.dispose();
     _symbolController.dispose();
     _quantityController.dispose();
-    _costBasisController.dispose();
+    _avgPriceController.dispose();
+    _accountController.dispose();
     super.dispose();
   }
+
+  double _parse(String s) => double.tryParse(s.replaceAll(',', '.')) ?? 0.0;
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -77,11 +107,16 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final quantity =
-          double.parse(_quantityController.text.replaceAll(',', '.'));
-      final costBasis =
-          double.tryParse(_costBasisController.text.replaceAll(',', '.')) ??
-              0.0;
+      final quantity = _parse(_quantityController.text);
+
+      // Cost basis is always stored as the TOTAL invested.
+      // - stock/crypto: avg price per share x quantity
+      // - fixed-value (bond/cash/other): value itself, so P&L is 0
+      final double costBasis = _isFixedValueType
+          ? quantity
+          : _parse(_avgPriceController.text) * quantity;
+
+      final account = _accountController.text.trim();
 
       final inv = Investment(
         id: widget.investmentToEdit?.id,
@@ -94,6 +129,9 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
         quantity: quantity,
         costBasis: costBasis,
         currency: _selectedCurrency,
+        account: account.isEmpty ? null : account,
+        // Stock/crypto are always part of the investing portfolio.
+        investable: _isFixedValueType ? _investable : true,
       );
 
       if (widget.investmentToEdit == null) {
@@ -126,6 +164,12 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
   @override
   Widget build(BuildContext context) {
     context.locale; // subscribe to locale changes so .tr() strings re-evaluate
+
+    // Live "total invested" preview for stock/crypto.
+    final double qty = _parse(_quantityController.text);
+    final double avg = _parse(_avgPriceController.text);
+    final double totalInvested = qty * avg;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.investmentToEdit == null
@@ -138,6 +182,7 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
         child: Form(
           key: _formKey,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
@@ -204,6 +249,7 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                 controller: _quantityController,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
                   labelText: _isFixedValueType
                       ? 'add_investment.current_value'.tr()
@@ -216,16 +262,78 @@ class _AddInvestmentScreenState extends State<AddInvestmentScreen> {
                 validator: (v) =>
                     v == null || v.isEmpty ? 'common.required'.tr() : null,
               ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _costBasisController,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                    labelText: 'add_investment.cost_basis'.tr(),
+              // Avg purchase price (stock/crypto only)
+              if (!_isFixedValueType) ...[
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _avgPriceController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    labelText: 'add_investment.avg_price'.tr(),
                     border: const OutlineInputBorder(),
-                    helperText: 'add_investment.cost_basis_hint'.tr()),
+                    prefixText: '$_selectedCurrency ',
+                    helperText: 'add_investment.avg_price_hint'.tr(),
+                  ),
+                ),
+                if (totalInvested > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6, left: 4),
+                    child: Text(
+                      '${'add_investment.total_invested'.tr()}: $_selectedCurrency ${totalInvested.toStringAsFixed(2)}',
+                      style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontWeight: FontWeight.w500),
+                    ),
+                  ),
+              ],
+              const SizedBox(height: 16),
+              // Account label + suggestion chips
+              TextFormField(
+                controller: _accountController,
+                onChanged: (v) {
+                  final match = v.trim();
+                  if (_accountInvestable.containsKey(match)) {
+                    setState(() => _investable = _accountInvestable[match]!);
+                  }
+                },
+                decoration: InputDecoration(
+                  labelText: 'add_investment.account'.tr(),
+                  border: const OutlineInputBorder(),
+                  helperText: 'add_investment.account_hint'.tr(),
+                ),
               ),
+              if (_accountSuggestions.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: _accountSuggestions
+                        .map((a) => ActionChip(
+                              label: Text(a),
+                              onPressed: () => setState(() {
+                                _accountController.text = a;
+                                if (_accountInvestable.containsKey(a)) {
+                                  _investable = _accountInvestable[a]!;
+                                }
+                              }),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              // Investable toggle (reserves vs investing) — fixed-value types only
+              if (_isFixedValueType) ...[
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('add_investment.investable_toggle'.tr()),
+                  subtitle: Text('add_investment.investable_sub'.tr()),
+                  value: _investable,
+                  onChanged: (v) => setState(() => _investable = v),
+                ),
+              ],
               const SizedBox(height: 32),
               SizedBox(
                 width: double.infinity,
