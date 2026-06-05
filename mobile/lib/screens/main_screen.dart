@@ -15,6 +15,8 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
   final GlobalKey<HomeScreenState> _homeKey = GlobalKey<HomeScreenState>();
+  final GlobalKey<InvestmentsScreenState> _investmentsKey =
+      GlobalKey<InvestmentsScreenState>();
   bool? _isSuperAdmin;
 
   @override
@@ -43,7 +45,7 @@ class _MainScreenState extends State<MainScreen> {
     // does not map to a screen — it triggers the add-options sheet.
     final screens = <Widget>[
       HomeScreen(key: _homeKey),
-      const InvestmentsScreen(),
+      InvestmentsScreen(key: _investmentsKey),
       if (isAdmin) const SuperAdminScreen(),
     ];
 
@@ -61,7 +63,13 @@ class _MainScreenState extends State<MainScreen> {
         type: BottomNavigationBarType.fixed,
         onTap: (index) {
           if (index == 2) {
-            _homeKey.currentState?.showAddOptions();
+            // Center "+" is context-aware: add an investment while the
+            // Investments tab is showing, otherwise add a spending/earning.
+            if (_currentIndex == 1) {
+              _investmentsKey.currentState?.openAddInvestment();
+            } else {
+              _homeKey.currentState?.showAddOptions();
+            }
           } else {
             setState(() => _currentIndex = index);
           }

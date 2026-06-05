@@ -13,6 +13,7 @@ import 'add_earning_screen.dart';
 import 'expense_details_screen.dart';
 import 'recurring_expenses_screen.dart';
 import 'category_management_screen.dart';
+import '../utils/category_icons.dart';
 import 'family_invites_screen.dart';
 import '../widgets/language_toggle.dart';
 
@@ -767,7 +768,10 @@ class HomeScreenState extends State<HomeScreen> {
                         onLongPress: () => _deleteExpense(exp),
                         leading: CircleAvatar(
                           backgroundColor: Colors.blue[50],
-                          child: Text(_translateCategoryLabel(exp['category_label'] as String)[0]),
+                          child: Icon(
+                              categoryIcon(exp['category_key'] as String?),
+                              color: Colors.blue,
+                              size: 20),
                         ),
                         title: Row(
                           children: [
