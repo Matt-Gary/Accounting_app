@@ -9,10 +9,10 @@ class InvestmentsScreen extends StatefulWidget {
   const InvestmentsScreen({super.key});
 
   @override
-  State<InvestmentsScreen> createState() => _InvestmentsScreenState();
+  State<InvestmentsScreen> createState() => InvestmentsScreenState();
 }
 
-class _InvestmentsScreenState extends State<InvestmentsScreen> {
+class InvestmentsScreenState extends State<InvestmentsScreen> {
   final _backendService = BackendService();
   bool _isLoading = false;
   bool _isLoadingUser = true;
@@ -97,6 +97,9 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
 
   String _qty(double q) =>
       q == q.roundToDouble() ? q.toInt().toString() : q.toString();
+
+  // Public entry point used by the bottom-nav "+" when the Investments tab is active.
+  void openAddInvestment() => _openEditor();
 
   void _openEditor({Investment? inv}) async {
     await Navigator.push(
@@ -402,9 +405,6 @@ class _InvestmentsScreenState extends State<InvestmentsScreen> {
           IconButton(
               icon: const Icon(Icons.refresh, color: Colors.black),
               onPressed: _loadData),
-          IconButton(
-              icon: const Icon(Icons.add, color: Colors.black),
-              onPressed: () => _openEditor()),
         ],
       ),
       body: _errorMessage.isNotEmpty
