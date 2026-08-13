@@ -66,7 +66,7 @@ class _MainScreenState extends State<MainScreen> {
             // Center "+" is context-aware: add an investment while the
             // Investments tab is showing, otherwise add a spending/earning.
             if (_currentIndex == 1) {
-              _investmentsKey.currentState?.openAddInvestment();
+              _investmentsKey.currentState?.openAddTransaction();
             } else {
               _homeKey.currentState?.showAddOptions();
             }

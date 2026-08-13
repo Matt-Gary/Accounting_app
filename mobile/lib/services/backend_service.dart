@@ -8,8 +8,8 @@ import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  //static const String baseUrl = 'http://127.0.0.1:5000';
-  static const String baseUrl = 'http://72.60.137.97:5005';
+  static const String baseUrl = 'http://127.0.0.1:5000';
+  //static const String baseUrl = 'http://72.60.137.97:5005';
 
   Map<String, String> _authHeaders({bool json = false}) {
     final session = Supabase.instance.client.auth.currentSession;
@@ -135,47 +135,128 @@ class BackendService {
     }
   }
 
-  Future<PortfolioData> getInvestments() async {
-    final uri = Uri.parse('$baseUrl/investments');
-    final response = await _withAuth((h) => http.get(uri, headers: h));
+  // ── Portfolio ──────────────────────────────────────────────────────────────
 
+  Future<PortfolioSummary> getPortfolio() async {
+    final uri = Uri.parse('$baseUrl/investments/portfolio');
+    final response = await _withAuth((h) => http.get(uri, headers: h));
     if (response.statusCode == 200) {
-      return PortfolioData.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception('Failed to load investments: ${response.body}');
+      return PortfolioSummary.fromJson(jsonDecode(response.body));
     }
+    throw Exception('Failed to load portfolio: ${response.body}');
   }
 
-  Future<void> addInvestment(Map<String, dynamic> data) async {
-    final uri = Uri.parse('$baseUrl/investments');
-    final body = jsonEncode(data);
+  // ── Assets ─────────────────────────────────────────────────────────────────
+
+  Future<List<InvestmentAsset>> getAssets() async {
+    final uri = Uri.parse('$baseUrl/investments/assets');
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return (jsonDecode(response.body) as List)
+          .map((e) => InvestmentAsset.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    throw Exception('Failed to load assets: ${response.body}');
+  }
+
+  Future<InvestmentAsset> createAsset(Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/investments/assets');
     final response = await _withAuth(
-      (h) => http.post(uri, headers: h, body: body),
+      (h) => http.post(uri, headers: h, body: jsonEncode(data)),
       json: true,
     );
-    if (response.statusCode != 201) {
-      throw Exception('Failed to add investment: ${response.body}');
+    if (response.statusCode == 201) {
+      return InvestmentAsset.fromJson(jsonDecode(response.body));
     }
+    throw Exception('Failed to create asset: ${response.body}');
   }
 
-  Future<void> updateInvestmentById(
-      String id, Map<String, dynamic> data) async {
-    final uri = Uri.parse('$baseUrl/investments/$id');
-    final body = jsonEncode(data);
+  Future<void> updateAsset(String id, Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/investments/assets/$id');
     final response = await _withAuth(
-      (h) => http.put(uri, headers: h, body: body),
+      (h) => http.put(uri, headers: h, body: jsonEncode(data)),
       json: true,
     );
     if (response.statusCode != 200) {
-      throw Exception('Failed to update investment: ${response.body}');
+      throw Exception('Failed to update asset: ${response.body}');
     }
   }
 
-  Future<void> deleteInvestmentById(String id) async {
-    final uri = Uri.parse('$baseUrl/investments/$id');
+  Future<void> deleteAsset(String id) async {
+    final uri = Uri.parse('$baseUrl/investments/assets/$id');
     final response = await _withAuth((h) => http.delete(uri, headers: h));
     if (response.statusCode != 200) {
-      throw Exception('Failed to delete investment: ${response.body}');
+      throw Exception('Failed to delete asset: ${response.body}');
+    }
+  }
+
+  // ── Transactions ───────────────────────────────────────────────────────────
+
+  Future<List<InvestmentTransaction>> getTransactions({
+    String? assetId,
+    int? year,
+  }) async {
+    final params = <String, String>{};
+    if (assetId != null) params['asset_id'] = assetId;
+    if (year != null) params['year'] = year.toString();
+    final uri = Uri.parse('$baseUrl/investments/transactions')
+        .replace(queryParameters: params.isEmpty ? null : params);
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return (jsonDecode(response.body) as List)
+          .map((e) => InvestmentTransaction.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    throw Exception('Failed to load transactions: ${response.body}');
+  }
+
+  Future<InvestmentTransaction> createTransaction(
+      Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/investments/transactions');
+    final response = await _withAuth(
+      (h) => http.post(uri, headers: h, body: jsonEncode(data)),
+      json: true,
+    );
+    if (response.statusCode == 201) {
+      return InvestmentTransaction.fromJson(jsonDecode(response.body));
+    }
+    throw Exception('Failed to create transaction: ${response.body}');
+  }
+
+  Future<void> updateTransaction(String id, Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/investments/transactions/$id');
+    final response = await _withAuth(
+      (h) => http.put(uri, headers: h, body: jsonEncode(data)),
+      json: true,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update transaction: ${response.body}');
+    }
+  }
+
+  Future<void> deleteTransaction(String id) async {
+    final uri = Uri.parse('$baseUrl/investments/transactions/$id');
+    final response = await _withAuth((h) => http.delete(uri, headers: h));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete transaction: ${response.body}');
+    }
+  }
+
+  // ── Tax Report Download ────────────────────────────────────────────────────
+
+  Future<void> downloadInvestmentReport(int year) async {
+    final uri = Uri.parse('$baseUrl/investments/report/$year');
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      final dir = await _getDownloadDirectory();
+      final file = File('${dir.path}/investments_$year.xlsx');
+      await file.writeAsBytes(response.bodyBytes);
+      final fileUri = Uri.file(file.path);
+      if (await canLaunchUrl(fileUri)) {
+        await launchUrl(fileUri, mode: LaunchMode.externalApplication);
+      }
+    } else {
+      throw Exception('Report download failed: ${response.statusCode}');
     }
   }
 
@@ -200,24 +281,6 @@ class BackendService {
       return jsonDecode(response.body);
     }
     throw Exception('Failed to update expense: ${response.body}');
-  }
-
-  Future<PortfolioDistribution> getPortfolioDistribution(
-      {List<String>? investmentTypes}) async {
-    final queryParams = {
-      if (investmentTypes != null && investmentTypes.isNotEmpty)
-        'investment_types': investmentTypes.join(','),
-    };
-
-    final uri = Uri.parse('$baseUrl/investments/distribution')
-        .replace(queryParameters: queryParams);
-    final response = await _withAuth((h) => http.get(uri, headers: h));
-
-    if (response.statusCode == 200) {
-      return PortfolioDistribution.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception('Failed to load distribution: ${response.body}');
-    }
   }
 
   // ============= CLOSING DAY OVERRIDE METHODS =============
@@ -622,45 +685,6 @@ class BackendService {
   }
 }
 
-class PortfolioData {
-  final double totalValueUsd;
-  final double totalValueBrl;
-  final double investingTotalUsd;
-  final double investingTotalBrl;
-  final double reservesTotalUsd;
-  final double reservesTotalBrl;
-  final double exchangeRate;
-  final List<Investment> investments;
-
-  PortfolioData(
-      {required this.totalValueUsd,
-      required this.totalValueBrl,
-      required this.investingTotalUsd,
-      required this.investingTotalBrl,
-      required this.reservesTotalUsd,
-      required this.reservesTotalBrl,
-      required this.exchangeRate,
-      required this.investments});
-
-  factory PortfolioData.fromJson(Map<String, dynamic> json) {
-    return PortfolioData(
-      totalValueUsd: (json['total_value_usd'] as num? ?? 0.0).toDouble(),
-      totalValueBrl: (json['total_value_brl'] as num? ?? 0.0).toDouble(),
-      investingTotalUsd:
-          (json['investing_total_usd'] as num? ?? 0.0).toDouble(),
-      investingTotalBrl:
-          (json['investing_total_brl'] as num? ?? 0.0).toDouble(),
-      reservesTotalUsd: (json['reserves_total_usd'] as num? ?? 0.0).toDouble(),
-      reservesTotalBrl: (json['reserves_total_brl'] as num? ?? 0.0).toDouble(),
-      exchangeRate: (json['exchange_rate_usd_brl'] as num? ?? 0.0).toDouble(),
-      investments: (json['investments'] as List<dynamic>?)
-              ?.map((e) => Investment.fromJson(e))
-              .toList() ??
-          [],
-    );
-  }
-}
-
 class DashboardData {
   final double totalSpent;
   final double totalEarned;
@@ -711,100 +735,6 @@ class DashboardData {
               ?.map((e) => Earning.fromJson(e))
               .toList() ??
           [],
-    );
-  }
-}
-
-class PortfolioDistribution {
-  final List<InvestmentTypeDistribution> distribution;
-  final List<InvestmentItem>?
-      items; // Individual investments when filtering by type
-  final double totalValueUsd;
-  final double totalValueBrl;
-  final double exchangeRate;
-
-  PortfolioDistribution({
-    required this.distribution,
-    this.items,
-    required this.totalValueUsd,
-    required this.totalValueBrl,
-    required this.exchangeRate,
-  });
-
-  factory PortfolioDistribution.fromJson(Map<String, dynamic> json) {
-    return PortfolioDistribution(
-      distribution: (json['distribution'] as List<dynamic>?)
-              ?.map((e) => InvestmentTypeDistribution.fromJson(e))
-              .toList() ??
-          [],
-      items: json['items'] != null
-          ? (json['items'] as List<dynamic>)
-              .map((e) => InvestmentItem.fromJson(e))
-              .toList()
-          : null,
-      totalValueUsd: (json['total_value_usd'] as num? ?? 0.0).toDouble(),
-      totalValueBrl: (json['total_value_brl'] as num? ?? 0.0).toDouble(),
-      exchangeRate: (json['exchange_rate_usd_brl'] as num? ?? 0.0).toDouble(),
-    );
-  }
-}
-
-// Placeholder for InvestmentItem, assuming it's similar to Investment
-// You might need to adjust this based on your actual InvestmentItem structure
-class InvestmentItem {
-  final String? id;
-  final String name;
-  final String? symbol;
-  final String type;
-  final double valueUsd;
-  final double valueBrl;
-  final double percentage;
-  final double quantity;
-
-  InvestmentItem({
-    this.id,
-    required this.name,
-    this.symbol,
-    required this.type,
-    required this.valueUsd,
-    required this.valueBrl,
-    required this.percentage,
-    required this.quantity,
-  });
-
-  factory InvestmentItem.fromJson(Map<String, dynamic> json) {
-    return InvestmentItem(
-      id: json['id']?.toString(),
-      name: json['name'] ?? '',
-      symbol: json['symbol'],
-      type: json['type'] ?? '',
-      valueUsd: (json['value_usd'] as num? ?? 0.0).toDouble(),
-      valueBrl: (json['value_brl'] as num? ?? 0.0).toDouble(),
-      percentage: (json['percentage'] as num? ?? 0.0).toDouble(),
-      quantity: (json['quantity'] as num? ?? 0.0).toDouble(),
-    );
-  }
-}
-
-class InvestmentTypeDistribution {
-  final String type;
-  final double valueUsd;
-  final double valueBrl;
-  final double percentage;
-
-  InvestmentTypeDistribution({
-    required this.type,
-    required this.valueUsd,
-    required this.valueBrl,
-    required this.percentage,
-  });
-
-  factory InvestmentTypeDistribution.fromJson(Map<String, dynamic> json) {
-    return InvestmentTypeDistribution(
-      type: json['type'] ?? '',
-      valueUsd: (json['value_usd'] as num? ?? 0.0).toDouble(),
-      valueBrl: (json['value_brl'] as num? ?? 0.0).toDouble(),
-      percentage: (json['percentage'] as num? ?? 0.0).toDouble(),
     );
   }
 }

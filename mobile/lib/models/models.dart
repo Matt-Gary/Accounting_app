@@ -250,84 +250,230 @@ class Earning {
   }
 }
 
-class Investment {
+// ── Investment Asset (position master) ───────────────────────────────────────
+
+class InvestmentAsset {
   final String? id;
-  final String userId;
-  final String type; // stock, crypto, bond, cash
+  final String familyId;
+  final String category; // stock | bond | crypto | cash_broker | cash_home | cash_bank
   final String? symbol;
   final String name;
+  final String currency;
+  final String? account;
+  final String? notes;
+
+  // Computed by backend from transaction history
   final double quantity;
-  final double costBasis;
-  final String currency; // 'USD' or 'BRL'
-  final String? account; // grouping label, e.g. "Interactive Brokers"
-  final bool investable; // true = investing portfolio, false = reserve
-
-  // Enriched fields from backend
+  final double avgCostBrl;
+  final double totalInvestedBrl;
+  final double realizedGainsBrl;
+  final double dividendsBrl;
   final double? currentPrice;
-  final double? avgPrice; // derived: cost_basis / quantity
-  final double? dailyChangePct; // today's price move % (stock/crypto)
-  final double? currentValueNative;
-  final double? currentValueUsd;
-  final double? currentValueBrl;
-  final double? pnl;
-  final double? pnlPct;
+  final double? dailyChangePct;
+  final double currentValueBrl;
+  final double unrealizedPnlBrl;
+  final double unrealizedPnlPct;
 
-  Investment({
+  static const Set<String> pricedCategories = {'stock', 'crypto'};
+  bool get hasMktPrice => pricedCategories.contains(category) && symbol != null;
+
+  InvestmentAsset({
     this.id,
-    required this.userId,
-    required this.type,
+    required this.familyId,
+    required this.category,
     this.symbol,
     required this.name,
-    required this.quantity,
-    this.costBasis = 0.0,
     this.currency = 'BRL',
     this.account,
-    this.investable = true,
+    this.notes,
+    this.quantity = 0.0,
+    this.avgCostBrl = 0.0,
+    this.totalInvestedBrl = 0.0,
+    this.realizedGainsBrl = 0.0,
+    this.dividendsBrl = 0.0,
     this.currentPrice,
-    this.avgPrice,
     this.dailyChangePct,
-    this.currentValueNative,
-    this.currentValueUsd,
-    this.currentValueBrl,
-    this.pnl,
-    this.pnlPct,
+    this.currentValueBrl = 0.0,
+    this.unrealizedPnlBrl = 0.0,
+    this.unrealizedPnlPct = 0.0,
   });
 
-  factory Investment.fromJson(Map<String, dynamic> json) {
-    return Investment(
+  factory InvestmentAsset.fromJson(Map<String, dynamic> json) {
+    return InvestmentAsset(
       id: json['id'],
-      userId: json['user_id'],
-      type: json['type'] ?? 'other',
+      familyId: json['family_id'] ?? '',
+      category: json['category'] ?? 'stock',
       symbol: json['symbol'],
-      name: json['name'],
-      quantity: (json['quantity'] as num? ?? 0.0).toDouble(),
-      costBasis: (json['cost_basis'] as num? ?? 0.0).toDouble(),
+      name: json['name'] ?? '',
       currency: json['currency'] ?? 'BRL',
       account: json['account'],
-      investable: json['investable'] as bool? ?? true,
+      notes: json['notes'],
+      quantity: (json['quantity'] as num? ?? 0.0).toDouble(),
+      avgCostBrl: (json['avg_cost_brl'] as num? ?? 0.0).toDouble(),
+      totalInvestedBrl: (json['total_invested_brl'] as num? ?? 0.0).toDouble(),
+      realizedGainsBrl: (json['realized_gains_brl'] as num? ?? 0.0).toDouble(),
+      dividendsBrl: (json['dividends_brl'] as num? ?? 0.0).toDouble(),
       currentPrice: (json['current_price'] as num?)?.toDouble(),
-      avgPrice: (json['avg_price'] as num?)?.toDouble(),
       dailyChangePct: (json['daily_change_pct'] as num?)?.toDouble(),
-      currentValueNative: (json['current_value_native'] as num?)?.toDouble(),
-      currentValueUsd: (json['current_value_usd'] as num?)?.toDouble(),
-      currentValueBrl: (json['current_value_brl'] as num?)?.toDouble(),
-      pnl: (json['pnl'] as num?)?.toDouble(),
-      pnlPct: (json['pnl_pct'] as num?)?.toDouble(),
+      currentValueBrl: (json['current_value_brl'] as num? ?? 0.0).toDouble(),
+      unrealizedPnlBrl: (json['unrealized_pnl_brl'] as num? ?? 0.0).toDouble(),
+      unrealizedPnlPct: (json['unrealized_pnl_pct'] as num? ?? 0.0).toDouble(),
     );
   }
 
-  Map<String, dynamic> toJson() {
-    return {
-      if (id != null) 'id': id,
-      'user_id': userId,
-      'type': type,
-      'symbol': symbol,
-      'name': name,
-      'quantity': quantity,
-      'cost_basis': costBasis,
-      'currency': currency,
-      'account': account,
-      'investable': investable,
-    };
+  Map<String, dynamic> toAssetJson() => {
+        'category': category,
+        'name': name,
+        if (symbol != null) 'symbol': symbol,
+        'currency': currency,
+        if (account != null) 'account': account,
+        if (notes != null) 'notes': notes,
+      };
+}
+
+// ── Investment Transaction ────────────────────────────────────────────────────
+
+class InvestmentTransaction {
+  final String? id;
+  final String assetId;
+  final String familyId;
+  final String transactionType; // buy | sell | dividend | deposit | withdrawal
+  final DateTime transactionDate;
+  final double quantity;
+  final double? pricePerUnitOriginal;
+  final String originalCurrency;
+  final double originalAmount;
+  final double? exchangeRate;
+  final double brlAmount;
+  final double feesBrl;
+  final String? notes;
+
+  // Embedded from JOIN (present in list responses)
+  final String? assetName;
+  final String? assetSymbol;
+  final String? assetCategory;
+  final String? assetAccount;
+
+  InvestmentTransaction({
+    this.id,
+    required this.assetId,
+    required this.familyId,
+    required this.transactionType,
+    required this.transactionDate,
+    this.quantity = 0.0,
+    this.pricePerUnitOriginal,
+    this.originalCurrency = 'BRL',
+    required this.originalAmount,
+    this.exchangeRate,
+    required this.brlAmount,
+    this.feesBrl = 0.0,
+    this.notes,
+    this.assetName,
+    this.assetSymbol,
+    this.assetCategory,
+    this.assetAccount,
+  });
+
+  factory InvestmentTransaction.fromJson(Map<String, dynamic> json) {
+    final assetInfo = json['investment_assets'] as Map<String, dynamic>?;
+    return InvestmentTransaction(
+      id: json['id'],
+      assetId: json['asset_id'] ?? '',
+      familyId: json['family_id'] ?? '',
+      transactionType: json['transaction_type'] ?? 'buy',
+      transactionDate: DateTime.parse(json['transaction_date']),
+      quantity: (json['quantity'] as num? ?? 0.0).toDouble(),
+      pricePerUnitOriginal: (json['price_per_unit_original'] as num?)?.toDouble(),
+      originalCurrency: json['original_currency'] ?? 'BRL',
+      originalAmount: (json['original_amount'] as num? ?? 0.0).toDouble(),
+      exchangeRate: (json['exchange_rate'] as num?)?.toDouble(),
+      brlAmount: (json['brl_amount'] as num? ?? 0.0).toDouble(),
+      feesBrl: (json['fees_brl'] as num? ?? 0.0).toDouble(),
+      notes: json['notes'],
+      assetName: assetInfo?['name'],
+      assetSymbol: assetInfo?['symbol'],
+      assetCategory: assetInfo?['category'],
+      assetAccount: assetInfo?['account'],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'asset_id': assetId,
+        'transaction_type': transactionType,
+        'transaction_date':
+            '${transactionDate.year}-${transactionDate.month.toString().padLeft(2, '0')}-${transactionDate.day.toString().padLeft(2, '0')}',
+        'quantity': quantity,
+        if (pricePerUnitOriginal != null) 'price_per_unit_original': pricePerUnitOriginal,
+        'original_currency': originalCurrency,
+        'original_amount': originalAmount,
+        if (exchangeRate != null) 'exchange_rate': exchangeRate,
+        'brl_amount': brlAmount,
+        'fees_brl': feesBrl,
+        if (notes != null && notes!.isNotEmpty) 'notes': notes,
+      };
+}
+
+// ── Category Summary ──────────────────────────────────────────────────────────
+
+class CategorySummary {
+  final String category;
+  final double valueBrl;
+  final double investedBrl;
+
+  double get pnlBrl => valueBrl - investedBrl;
+  double get pnlPct => investedBrl > 0 ? (pnlBrl / investedBrl * 100) : 0.0;
+
+  CategorySummary({
+    required this.category,
+    required this.valueBrl,
+    required this.investedBrl,
+  });
+
+  factory CategorySummary.fromJson(String category, Map<String, dynamic> json) {
+    return CategorySummary(
+      category: category,
+      valueBrl: (json['value_brl'] as num? ?? 0.0).toDouble(),
+      investedBrl: (json['invested_brl'] as num? ?? 0.0).toDouble(),
+    );
+  }
+}
+
+// ── Portfolio Summary ─────────────────────────────────────────────────────────
+
+class PortfolioSummary {
+  final double totalValueBrl;
+  final double totalInvestedBrl;
+  final double totalPnlBrl;
+  final double totalPnlPct;
+  final double exchangeRateUsdBrl;
+  final Map<String, CategorySummary> byCategory;
+  final List<InvestmentAsset> assets;
+
+  PortfolioSummary({
+    required this.totalValueBrl,
+    required this.totalInvestedBrl,
+    required this.totalPnlBrl,
+    required this.totalPnlPct,
+    required this.exchangeRateUsdBrl,
+    required this.byCategory,
+    required this.assets,
+  });
+
+  factory PortfolioSummary.fromJson(Map<String, dynamic> json) {
+    final rawByCategory = json['by_category'] as Map<String, dynamic>? ?? {};
+    final byCategory = rawByCategory.map(
+      (k, v) => MapEntry(k, CategorySummary.fromJson(k, v as Map<String, dynamic>)),
+    );
+    return PortfolioSummary(
+      totalValueBrl: (json['total_value_brl'] as num? ?? 0.0).toDouble(),
+      totalInvestedBrl: (json['total_invested_brl'] as num? ?? 0.0).toDouble(),
+      totalPnlBrl: (json['total_pnl_brl'] as num? ?? 0.0).toDouble(),
+      totalPnlPct: (json['total_pnl_pct'] as num? ?? 0.0).toDouble(),
+      exchangeRateUsdBrl: (json['exchange_rate_usd_brl'] as num? ?? 5.0).toDouble(),
+      byCategory: byCategory,
+      assets: (json['assets'] as List<dynamic>? ?? [])
+          .map((e) => InvestmentAsset.fromJson(e as Map<String, dynamic>))
+          .toList(),
+    );
   }
 }

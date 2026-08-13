@@ -193,16 +193,20 @@ class HomeScreenState extends State<HomeScreen> {
         year: _currentDate.year,
         closingDay: _closingDay,
         onRefresh: (refreshed) {
-          if (mounted) setState(() {
+          if (mounted) {
+            setState(() {
             _dashboardData = refreshed;
             _buildCategoryMap();
           });
+          }
         },
       );
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _dashboardData = data;
         _buildCategoryMap();
       });
+      }
     } catch (e) {
       if (mounted) setState(() => _errorMessage = e.toString());
     } finally {
