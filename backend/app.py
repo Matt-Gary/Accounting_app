@@ -33,7 +33,12 @@ def get_payment_methods(family_id=None):
     return {pm['id']: pm for pm in res.data}
 
 from service.earnings_service import fetch_earnings_for_period, add_earning
-from service.investment_service import fetch_portfolio, add_investment, update_investment, delete_investment, get_portfolio_distribution_by_type
+from service.investment_service import (
+    get_portfolio_summary,
+    get_assets, add_asset, update_asset, delete_asset,
+    get_transactions, add_transaction, update_transaction, delete_transaction,
+    compute_realized_gains, generate_yearly_report,
+)
 from service.closing_day_service import get_closing_day_for_month, set_closing_day_for_month, delete_closing_day_for_month
 from datetime import timedelta, date
 
@@ -427,66 +432,141 @@ def update_expense(expense_id):
         return jsonify({"error": str(e)}), 500
 
 # INVESTMENTS ENDPOINTS
-@app.route('/investments', methods=['GET'])
+
+@app.route('/investments/portfolio', methods=['GET'])
 @require_auth
-def get_investments():
+def get_portfolio():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
     try:
-        portfolio = fetch_portfolio(g.profile_id, family_id=g.family_id)
-        return jsonify(portfolio)
+        return jsonify(get_portfolio_summary(g.family_id))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/investments', methods=['POST'])
+
+# ── Assets ────────────────────────────────────────────────────────────────────
+
+@app.route('/investments/assets', methods=['GET'])
 @require_auth
-def create_investment():
+def list_assets():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    try:
+        return jsonify(get_assets(g.family_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/investments/assets', methods=['POST'])
+@require_auth
+def create_asset():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
     data = request.json
-    required_fields = ['type', 'name', 'quantity']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({"error": f"Missing field: {field}"}), 400
-
+    for field in ['category', 'name']:
+        if not data.get(field):
+            return jsonify({"error": f"Missing required field: {field}"}), 400
     try:
-        res = add_investment(g.profile_id, data, family_id=g.family_id)
-        return jsonify(res), 201
+        result = add_asset(g.family_id, data)
+        return jsonify(result), 201
     except Exception as e:
-         return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/investments/<inv_id>', methods=['PUT'])
+
+@app.route('/investments/assets/<asset_id>', methods=['PUT'])
 @require_auth
-def edit_investment(inv_id):
+def edit_asset(asset_id):
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    try:
+        return jsonify(update_asset(asset_id, g.family_id, request.json))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/investments/assets/<asset_id>', methods=['DELETE'])
+@require_auth
+def remove_asset(asset_id):
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    try:
+        return jsonify(delete_asset(asset_id, g.family_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Transactions ──────────────────────────────────────────────────────────────
+
+@app.route('/investments/transactions', methods=['GET'])
+@require_auth
+def list_transactions():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    asset_id = request.args.get('asset_id')
+    year = request.args.get('year')
+    year = int(year) if year else None
+    try:
+        return jsonify(get_transactions(g.family_id, asset_id=asset_id, year=year))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/investments/transactions', methods=['POST'])
+@require_auth
+def create_transaction():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
     data = request.json
+    for field in ['asset_id', 'transaction_type', 'transaction_date',
+                  'original_currency', 'original_amount']:
+        if data.get(field) is None:
+            return jsonify({"error": f"Missing required field: {field}"}), 400
     try:
-        # Filter allowed fields
-        allowed = ['quantity', 'cost_basis', 'name', 'symbol', 'type', 'currency', 'account', 'investable']
-        updates = {k: v for k, v in data.items() if k in allowed}
-
-        res = update_investment(inv_id, g.profile_id, updates, family_id=g.family_id)
-        return jsonify(res)
+        result = add_transaction(g.family_id, data)
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/investments/<inv_id>', methods=['DELETE'])
+
+@app.route('/investments/transactions/<tx_id>', methods=['PUT'])
 @require_auth
-def remove_investment(inv_id):
+def edit_transaction(tx_id):
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
     try:
-        res = delete_investment(inv_id, g.profile_id)
-        return jsonify(res)
+        return jsonify(update_transaction(tx_id, g.family_id, request.json))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/investments/distribution', methods=['GET'])
-@require_auth
-def get_distribution():
-    # Optional filter: investment_types as comma-separated string
-    # Example: ?investment_types=stock,crypto
-    types_param = request.args.get('investment_types')
-    investment_types = None
-    if types_param:
-        investment_types = [t.strip() for t in types_param.split(',') if t.strip()]
 
+@app.route('/investments/transactions/<tx_id>', methods=['DELETE'])
+@require_auth
+def remove_transaction(tx_id):
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
     try:
-        distribution = get_portfolio_distribution_by_type(g.profile_id, investment_types, family_id=g.family_id)
-        return jsonify(distribution)
+        return jsonify(delete_transaction(tx_id, g.family_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Tax Report ────────────────────────────────────────────────────────────────
+
+@app.route('/investments/report/<int:year>', methods=['GET'])
+@require_auth
+def investment_yearly_report(year):
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    try:
+        output = generate_yearly_report(g.family_id, year)
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f'investments_{year}.xlsx',
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

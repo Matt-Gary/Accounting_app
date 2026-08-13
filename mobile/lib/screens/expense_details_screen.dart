@@ -1,6 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../services/backend_service.dart';
 import 'edit_expense_screen.dart';
 import '../widgets/language_toggle.dart';
