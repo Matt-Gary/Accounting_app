@@ -31,6 +31,25 @@
 
   <title>mobile</title>
   <link rel="manifest" href="manifest.json">
+
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+
+  <!-- The Flutter PWA service worker cached a pre-cb0d088 bundle and kept serving
+       it across redeploys (that build calls the removed GET /investments, which
+       surfaces as a CORS NetworkError because the 404 preflight is non-2xx).
+       We now build with --pwa-strategy=none, so unregister any worker still
+       installed on a client and drop its caches; without this, browsers that
+       already registered the old worker never see a new build. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function (rs) {
+        for (const r of rs) r.unregister();
+      });
+      if (window.caches) {
+        caches.keys().then(function (ks) { for (const k of ks) caches.delete(k); });
+      }
+    }
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
