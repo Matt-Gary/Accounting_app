@@ -137,8 +137,12 @@ class BackendService {
 
   // ── Portfolio ──────────────────────────────────────────────────────────────
 
-  Future<PortfolioSummary> getPortfolio() async {
-    final uri = Uri.parse('$baseUrl/investments/portfolio');
+  /// Pass [refresh] to force a live Yahoo price fetch (pull-to-refresh).
+  /// Without it the backend serves cached prices, which keeps reloads after
+  /// adding a transaction near-instant.
+  Future<PortfolioSummary> getPortfolio({bool refresh = false}) async {
+    final uri = Uri.parse(
+        '$baseUrl/investments/portfolio${refresh ? '?refresh=1' : ''}');
     final response = await _withAuth((h) => http.get(uri, headers: h));
     if (response.statusCode == 200) {
       return PortfolioSummary.fromJson(jsonDecode(response.body));
@@ -210,6 +214,19 @@ class BackendService {
     throw Exception('Failed to load transactions: ${response.body}');
   }
 
+  /// Extract the backend's `{"error": "..."}` message so domain rejections
+  /// (oversell, missing FX rate, bad category) reach the user as readable
+  /// text instead of a raw JSON dump.
+  static String _errorMessage(http.Response response, String fallback) {
+    try {
+      final body = jsonDecode(response.body);
+      if (body is Map && body['error'] is String) {
+        return body['error'] as String;
+      }
+    } catch (_) {}
+    return '$fallback: ${response.body}';
+  }
+
   Future<InvestmentTransaction> createTransaction(
       Map<String, dynamic> data) async {
     final uri = Uri.parse('$baseUrl/investments/transactions');
@@ -220,7 +237,7 @@ class BackendService {
     if (response.statusCode == 201) {
       return InvestmentTransaction.fromJson(jsonDecode(response.body));
     }
-    throw Exception('Failed to create transaction: ${response.body}');
+    throw Exception(_errorMessage(response, 'Failed to create transaction'));
   }
 
   Future<void> updateTransaction(String id, Map<String, dynamic> data) async {
@@ -230,8 +247,84 @@ class BackendService {
       json: true,
     );
     if (response.statusCode != 200) {
-      throw Exception('Failed to update transaction: ${response.body}');
+      throw Exception(_errorMessage(response, 'Failed to update transaction'));
     }
+  }
+
+  /// TWR / XIRR and the S&P 500 comparison series. [range]: 1y or all.
+  Future<Map<String, dynamic>> getPerformance(String range) async {
+    final uri = Uri.parse('$baseUrl/investments/performance')
+        .replace(queryParameters: {'range': range});
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to load performance'));
+  }
+
+  /// Daily equity-curve points (value + invested, BRL), forward-filled by the
+  /// backend through today. [range] is one of: 3mo, 1y, all.
+  Future<Map<String, dynamic>> getPortfolioHistory(String range) async {
+    final uri = Uri.parse('$baseUrl/investments/history')
+        .replace(queryParameters: {'range': range});
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to load history'));
+  }
+
+  /// Daily closes for an asset's chart, in the instrument's own currency.
+  /// [range] is one of: 1mo, 6mo, 1y, 5y, max.
+  Future<Map<String, dynamic>> getAssetPriceHistory(
+      String assetId, String range) async {
+    final uri = Uri.parse('$baseUrl/investments/assets/$assetId/price-history')
+        .replace(queryParameters: {'range': range});
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to load price history'));
+  }
+
+  // ── Investment settings & historical FX ────────────────────────────────────
+
+  Future<Map<String, dynamic>> getInvestmentSettings() async {
+    final uri = Uri.parse('$baseUrl/investments/settings');
+    final response = await _withAuth((h) => http.get(uri, headers: h));
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to load settings'));
+  }
+
+  Future<Map<String, dynamic>> updateInvestmentSettings(
+      Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl/investments/settings');
+    final response = await _withAuth(
+      (h) => http.put(uri, headers: h, body: jsonEncode(data)),
+      json: true,
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to update settings'));
+  }
+
+  /// Closing FX rate to BRL on (or last before) [date] (yyyy-MM-dd).
+  /// Returns null when no rate exists — the form leaves the field to the
+  /// user instead of guessing (prefill is best-effort, never blocking).
+  Future<Map<String, dynamic>?> getFxRate(String currency, String date) async {
+    final uri = Uri.parse('$baseUrl/investments/fx-rate')
+        .replace(queryParameters: {'currency': currency, 'date': date});
+    try {
+      final response = await _withAuth((h) => http.get(uri, headers: h));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        return data['rate_brl'] == null ? null : data;
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<void> deleteTransaction(String id) async {
