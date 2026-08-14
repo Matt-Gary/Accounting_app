@@ -12,4 +12,4 @@ PyJWT==2.12.1
 
 # Test-only. Calculation modules under service/portfolio/ are pure functions
 # with no DB or network, so the suite runs without any fixtures or credentials.
-pytest==8.3.4
+pytest==9.0.3
