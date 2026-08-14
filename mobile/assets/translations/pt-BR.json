@@ -166,7 +166,191 @@
     "now_label": "Atual",
     "value_label": "Valor",
     "pnl_label": "L/P",
-    "qty_meta": "{qty} unidades · {type}"
+    "qty_meta": "{qty} unidades · {type}",
+    "title": "Portfólio",
+    "total_portfolio": "Portfólio Total",
+    "invested_label": "Investido",
+    "no_data": "Nenhum dado",
+    "empty": "Nenhum investimento ainda.\nToque + para adicionar a primeira transação.",
+    "today_label": "Hoje",
+    "add_transaction_tooltip": "Adicionar transação",
+    "annual_report": "Relatório Anual",
+    "annual_report_tooltip": "Relatório anual",
+    "download": "Baixar",
+    "allocation": {
+      "title": "Alocação do Portfólio",
+      "subtitle": "Participação do capital investido — ações, ETFs, cripto e caixa na corretora",
+      "share": "{pct}% do portfólio",
+      "incomplete": "Uma posição não pôde ser precificada, então estas participações usam um total incompleto."
+    },
+    "groups": {
+      "exchange": "Bolsa",
+      "off_exchange": "Fora da bolsa",
+      "share": "{pct}% do total",
+      "incomplete": "Uma posição aqui não pôde ser precificada — este valor está subestimado."
+    },
+    "dividends": {
+      "title": "Dividendos (líquidos)",
+      "last_12m": "Últimos 12 meses",
+      "total": "Desde o início",
+      "yield_on_cost": "Yield on cost"
+    },
+    "performance": {
+      "title": "Desempenho vs S&P 500",
+      "portfolio": "Portfólio",
+      "twr": "TWR (período)",
+      "xirr": "XIRR (anual)",
+      "benchmark": "S&P 500",
+      "empty": "O desempenho precisa de alguns dias de snapshots — o histórico se constrói a partir das visitas.",
+      "ranges": {
+        "1y": "1A",
+        "all": "Máx"
+      }
+    },
+    "equity": {
+      "title": "Valor do portfólio ({currency})",
+      "value": "Valor",
+      "invested": "Investido",
+      "empty": "O histórico se constrói a partir da primeira visita — volte amanhã para ver a primeira linha.",
+      "ranges": {
+        "3mo": "3M",
+        "1y": "1A",
+        "all": "Máx"
+      }
+    },
+    "chart": {
+      "title": "Histórico de preço ({currency})",
+      "no_data": "Sem histórico de preço disponível",
+      "avg_cost": "preço médio",
+      "ranges": {
+        "1mo": "1M",
+        "6mo": "6M",
+        "1y": "1A",
+        "5y": "5A",
+        "max": "Máx"
+      }
+    },
+    "concentration": {
+      "title": "Concentração acima dos seus limites ({count})",
+      "position_line": "{name} representa {pct}% do portfólio (limite {limit}%)",
+      "sector_line": "O setor {name} representa {pct}% do portfólio (limite {limit}%)",
+      "currency_line": "A moeda {name} representa {pct}% do portfólio (limite {limit}%)",
+      "country_line": "O país {name} representa {pct}% do portfólio (limite {limit}%)",
+      "hint": "Apenas informativo — os limites podem ser ajustados nas configurações de investimento."
+    },
+    "categories": {
+      "stock": "Ações",
+      "etf": "ETFs",
+      "crypto": "Cripto",
+      "bond": "Renda Fixa",
+      "cash_equivalent": "Caixa Equivalente",
+      "cash_broker": "Caixa Corretora",
+      "cash_home": "Dinheiro Físico",
+      "cash_bank": "Conta Bancária"
+    },
+    "cash": {
+      "balance": "saldo",
+      "cost": "custo",
+      "fx_move": "câmbio"
+    },
+    "archive": {
+      "title": "Posições encerradas ({count})",
+      "transactions": "{count} transações",
+      "no_transactions": "Sem transações",
+      "closed_badge": "Posição encerrada"
+    },
+    "category_hints": {
+      "cash_equivalent": "ETF de tesouro de curta duração mantido como reserva líquida — conta como poder de compra, não como posição de risco"
+    },
+    "tx_types": {
+      "buy": "Compra",
+      "sell": "Venda",
+      "dividend": "Dividendo",
+      "coupon": "Cupom",
+      "deposit": "Depósito",
+      "withdrawal": "Retirada"
+    },
+    "position": {
+      "quantity": "Quantidade",
+      "avg_price": "Preço Médio",
+      "current_value": "Valor Atual",
+      "invested": "Investido",
+      "unrealized_pnl": "Ganho Não Realizado",
+      "realized_gains": "Ganhos Realizados",
+      "dividends": "Dividendos",
+      "yield_on_cost": "YoC 12m: {pct}%"
+    },
+    "tx": {
+      "none": "Nenhuma transação.\nToque + para adicionar.",
+      "delete_title": "Excluir transação?",
+      "delete_error": "Erro ao excluir: {error}",
+      "units_short": "un.",
+      "date": "Data",
+      "amount_brl": "Valor BRL",
+      "quantity": "Quantidade",
+      "currency": "Moeda",
+      "original_amount": "Valor Original",
+      "exchange_rate": "Taxa de Câmbio",
+      "fees": "Taxas",
+      "notes": "Observações"
+    },
+    "form": {
+      "title": "Nova Transação",
+      "title_edit": "Editar Transação",
+      "save": "Salvar Alterações",
+      "asset": "Ativo",
+      "new_asset": "+ Novo ativo...",
+      "select_asset": "Selecione um ativo",
+      "tx_type": "Tipo de Transação",
+      "date": "Data da Transação",
+      "quantity": "Quantidade",
+      "quantity_required": "Informe a quantidade",
+      "currency": "Moeda Original",
+      "price_per_unit": "Preço por Unidade ({currency}) — opcional",
+      "price_helper": "Preencher calcula o total automaticamente",
+      "amount": "Valor ({currency})",
+      "total": "Total ({currency})",
+      "amount_required": "Informe o valor",
+      "amount_invalid": "Valor inválido",
+      "exchange_rate": "Taxa de Câmbio (1 {currency} = ? BRL)",
+      "exchange_rate_helper": "Informe a cotação na data da transação",
+      "exchange_rate_prefilled": "Copiado de {date} — atualize para a cotação da data desta transação",
+      "exchange_rate_fetched": "Fechamento de {date} (Yahoo) — ajuste se sua corretora usou outra cotação",
+      "exchange_rate_invalid": "Taxa inválida",
+      "oversell": "Maior que as {held} unidades em carteira",
+      "withholding": "Imposto retido na fonte ({currency}) — opcional",
+      "withholding_helper": "Imposto retido no exterior sobre este dividendo/cupom. A renda é exibida líquida.",
+      "withholding_exceeds_gross": "Não pode exceder o valor bruto",
+      "total_brl": "Total em BRL (R$)",
+      "total_brl_helper": "Calculado pelo servidor a partir do valor, taxa e câmbio.",
+      "total_brl_required": "Informe o valor em R$",
+      "fees": "Taxas/Corretagem ({currency}) — opcional",
+      "fees_helper": "Descontado do valor antes da conversão para BRL",
+      "notes": "Observações — opcional",
+      "submit": "Registrar Transação"
+    },
+    "asset_form": {
+      "title": "Novo Ativo",
+      "title_edit": "Editar Ativo",
+      "edit_asset": "Editar ativo",
+      "delete_asset": "Excluir ativo",
+      "category": "Categoria",
+      "name": "Nome",
+      "name_required": "Informe o nome",
+      "ticker": "Ticker (ex: AAPL, BTC-USD)",
+      "ticker_helper": "Usado para buscar o preço no Yahoo Finance",
+      "currency": "Moeda",
+      "account": "Corretora / Conta — opcional",
+      "sector": "Setor — opcional",
+      "country": "País / Região — opcional",
+      "notes": "Observações — opcional",
+      "submit": "Criar Ativo",
+      "save": "Salvar Alterações",
+      "create_error": "Erro ao criar ativo: {error}",
+      "risky_edit": "Este ativo tem {count} transações. Alterar a categoria ou a moeda muda como esse histórico é avaliado.",
+      "delete_title": "Excluir ativo?",
+      "delete_body": "\"{name}\" será removido. Não tem transações, então nada mais é perdido."
+    }
   },
   "add_investment": {
     "title_add": "Adicionar Investimento",

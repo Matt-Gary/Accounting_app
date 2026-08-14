@@ -38,7 +38,20 @@ from service.investment_service import (
     get_assets, add_asset, update_asset, delete_asset,
     get_transactions, add_transaction, update_transaction, delete_transaction,
     compute_realized_gains, generate_yearly_report,
+    get_settings as get_investment_settings,
+    update_settings as update_investment_settings,
+    get_fx_rate_for_date,
+    get_price_history,
+    get_history as get_portfolio_history,
+    get_performance,
 )
+from service.portfolio.categories import CATEGORY_ORDER
+from service.portfolio.cost_basis import BUY_TYPES, SELL_TYPES, INCOME_TYPES
+
+# Single source of truth for what the ledger accepts — mirrors the CHECK
+# constraints, so a bad value is a 400 here instead of a raw PostgREST 500.
+VALID_TRANSACTION_TYPES = frozenset(BUY_TYPES) | frozenset(SELL_TYPES) | frozenset(INCOME_TYPES)
+VALID_ASSET_CATEGORIES = frozenset(CATEGORY_ORDER)
 from service.closing_day_service import get_closing_day_for_month, set_closing_day_for_month, delete_closing_day_for_month
 from datetime import timedelta, date
 
@@ -439,7 +452,8 @@ def get_portfolio():
     if not g.family_id:
         return jsonify({"error": "No family found"}), 400
     try:
-        return jsonify(get_portfolio_summary(g.family_id))
+        force_refresh = request.args.get('refresh') == '1'
+        return jsonify(get_portfolio_summary(g.family_id, force_refresh))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -466,9 +480,16 @@ def create_asset():
     for field in ['category', 'name']:
         if not data.get(field):
             return jsonify({"error": f"Missing required field: {field}"}), 400
+    if data['category'] not in VALID_ASSET_CATEGORIES:
+        return jsonify({"error": f"Invalid category {data['category']!r}. "
+                                 f"Allowed: {sorted(VALID_ASSET_CATEGORIES)}"}), 400
     try:
         result = add_asset(g.family_id, data)
         return jsonify(result), 201
+    # ValueError covers MissingRateError and OversellError (both subclasses):
+    # the client sent something the domain rejects, so 400, not 500.
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -478,8 +499,14 @@ def create_asset():
 def edit_asset(asset_id):
     if not g.family_id:
         return jsonify({"error": "No family found"}), 400
+    data = request.json
+    if 'category' in data and data['category'] not in VALID_ASSET_CATEGORIES:
+        return jsonify({"error": f"Invalid category {data['category']!r}. "
+                                 f"Allowed: {sorted(VALID_ASSET_CATEGORIES)}"}), 400
     try:
-        return jsonify(update_asset(asset_id, g.family_id, request.json))
+        return jsonify(update_asset(asset_id, g.family_id, data))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -521,9 +548,13 @@ def create_transaction():
                   'original_currency', 'original_amount']:
         if data.get(field) is None:
             return jsonify({"error": f"Missing required field: {field}"}), 400
+    if data['transaction_type'] not in VALID_TRANSACTION_TYPES:
+        return jsonify({"error": f"Invalid transaction_type {data['transaction_type']!r}. "
+                                 f"Allowed: {sorted(VALID_TRANSACTION_TYPES)}"}), 400
     try:
         result = add_transaction(g.family_id, data)
         return jsonify(result), 201
+    # ValueError covers MissingRateError and OversellError (both subclasses).
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -535,8 +566,15 @@ def create_transaction():
 def edit_transaction(tx_id):
     if not g.family_id:
         return jsonify({"error": "No family found"}), 400
+    data = request.json
+    if ('transaction_type' in data
+            and data['transaction_type'] not in VALID_TRANSACTION_TYPES):
+        return jsonify({"error": f"Invalid transaction_type {data['transaction_type']!r}. "
+                                 f"Allowed: {sorted(VALID_TRANSACTION_TYPES)}"}), 400
     try:
-        return jsonify(update_transaction(tx_id, g.family_id, request.json))
+        return jsonify(update_transaction(tx_id, g.family_id, data))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -548,6 +586,105 @@ def remove_transaction(tx_id):
         return jsonify({"error": "No family found"}), 400
     try:
         return jsonify(delete_transaction(tx_id, g.family_id))
+    # Deleting a buy that funds a later sell leaves an unreplayable ledger;
+    # the service rejects it with OversellError (a ValueError).
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Performance: TWR / XIRR vs benchmark ─────────────────────────────────────
+
+@app.route('/investments/performance', methods=['GET'])
+@require_auth
+def investment_performance():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    range_key = request.args.get('range', '1y')
+    try:
+        return jsonify(get_performance(g.family_id, range_key))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Portfolio history (equity curve) ─────────────────────────────────────────
+
+@app.route('/investments/history', methods=['GET'])
+@require_auth
+def portfolio_history():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    range_key = request.args.get('range', '1y')
+    try:
+        return jsonify(get_portfolio_history(g.family_id, range_key))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Price history (asset chart) ──────────────────────────────────────────────
+
+@app.route('/investments/assets/<asset_id>/price-history', methods=['GET'])
+@require_auth
+def asset_price_history(asset_id):
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    range_key = request.args.get('range', '1y')
+    try:
+        return jsonify(get_price_history(asset_id, g.family_id, range_key))
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError as e:  # bad range, or an asset with no market symbol
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Settings (concentration thresholds) ──────────────────────────────────────
+
+@app.route('/investments/settings', methods=['GET'])
+@require_auth
+def investment_settings():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    try:
+        return jsonify(get_investment_settings(g.family_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/investments/settings', methods=['PUT'])
+@require_auth
+def edit_investment_settings():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    try:
+        return jsonify(update_investment_settings(g.family_id, request.json))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Historical FX rate (form prefill) ────────────────────────────────────────
+
+@app.route('/investments/fx-rate', methods=['GET'])
+@require_auth
+def investment_fx_rate():
+    if not g.family_id:
+        return jsonify({"error": "No family found"}), 400
+    currency = request.args.get('currency')
+    target_date = request.args.get('date')
+    if not currency or not target_date:
+        return jsonify({"error": "currency and date are required"}), 400
+    try:
+        return jsonify(get_fx_rate_for_date(currency, target_date))
+    except ValueError as e:  # malformed date
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

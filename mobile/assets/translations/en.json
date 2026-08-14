@@ -166,7 +166,191 @@
     "now_label": "Current",
     "value_label": "Value",
     "pnl_label": "P&L",
-    "qty_meta": "{qty} units · {type}"
+    "qty_meta": "{qty} units · {type}",
+    "title": "Portfolio",
+    "total_portfolio": "Total Portfolio",
+    "invested_label": "Invested",
+    "no_data": "No data",
+    "empty": "No investments yet.\nTap + to add your first transaction.",
+    "today_label": "Today",
+    "add_transaction_tooltip": "Add transaction",
+    "annual_report": "Annual Report",
+    "annual_report_tooltip": "Annual report",
+    "download": "Download",
+    "allocation": {
+      "title": "Portfolio Allocation",
+      "subtitle": "Share of deployed capital — stocks, ETFs, crypto and broker cash",
+      "share": "{pct}% of portfolio",
+      "incomplete": "A position could not be priced, so these shares are based on an incomplete total."
+    },
+    "groups": {
+      "exchange": "Exchange",
+      "off_exchange": "Off-exchange",
+      "share": "{pct}% of total",
+      "incomplete": "A position here could not be priced — this value is understated."
+    },
+    "dividends": {
+      "title": "Dividends (net)",
+      "last_12m": "Last 12 months",
+      "total": "All time",
+      "yield_on_cost": "Yield on cost"
+    },
+    "performance": {
+      "title": "Performance vs S&P 500",
+      "portfolio": "Portfolio",
+      "twr": "TWR (period)",
+      "xirr": "XIRR (yearly)",
+      "benchmark": "S&P 500",
+      "empty": "Performance needs a few days of snapshots — history builds up from visits.",
+      "ranges": {
+        "1y": "1Y",
+        "all": "Max"
+      }
+    },
+    "equity": {
+      "title": "Portfolio value ({currency})",
+      "value": "Value",
+      "invested": "Invested",
+      "empty": "History builds up from your first visit — come back tomorrow to see the first line.",
+      "ranges": {
+        "3mo": "3M",
+        "1y": "1Y",
+        "all": "Max"
+      }
+    },
+    "chart": {
+      "title": "Price history ({currency})",
+      "no_data": "No price history available",
+      "avg_cost": "avg cost",
+      "ranges": {
+        "1mo": "1M",
+        "6mo": "6M",
+        "1y": "1Y",
+        "5y": "5Y",
+        "max": "Max"
+      }
+    },
+    "concentration": {
+      "title": "Concentration above your limits ({count})",
+      "position_line": "{name} is {pct}% of the portfolio (limit {limit}%)",
+      "sector_line": "Sector {name} is {pct}% of the portfolio (limit {limit}%)",
+      "currency_line": "Currency {name} is {pct}% of the portfolio (limit {limit}%)",
+      "country_line": "Country {name} is {pct}% of the portfolio (limit {limit}%)",
+      "hint": "Informational only — thresholds can be adjusted in investment settings."
+    },
+    "categories": {
+      "stock": "Stocks",
+      "etf": "ETFs",
+      "crypto": "Crypto",
+      "bond": "Fixed Income",
+      "cash_equivalent": "Cash Equivalent",
+      "cash_broker": "Broker Cash",
+      "cash_home": "Physical Cash",
+      "cash_bank": "Bank Account"
+    },
+    "cash": {
+      "balance": "balance",
+      "cost": "cost",
+      "fx_move": "FX"
+    },
+    "archive": {
+      "title": "Closed positions ({count})",
+      "transactions": "{count} transactions",
+      "no_transactions": "No transactions yet",
+      "closed_badge": "Position closed"
+    },
+    "category_hints": {
+      "cash_equivalent": "Short-duration treasury ETF held as dry powder — counts as buying power, not a risk position"
+    },
+    "tx_types": {
+      "buy": "Buy",
+      "sell": "Sell",
+      "dividend": "Dividend",
+      "coupon": "Coupon",
+      "deposit": "Deposit",
+      "withdrawal": "Withdrawal"
+    },
+    "position": {
+      "quantity": "Quantity",
+      "avg_price": "Average Price",
+      "current_value": "Current Value",
+      "invested": "Invested",
+      "unrealized_pnl": "Unrealized Gain",
+      "realized_gains": "Realized Gains",
+      "dividends": "Dividends",
+      "yield_on_cost": "YoC 12m: {pct}%"
+    },
+    "tx": {
+      "none": "No transactions.\nTap + to add one.",
+      "delete_title": "Delete transaction?",
+      "delete_error": "Error deleting: {error}",
+      "units_short": "units",
+      "date": "Date",
+      "amount_brl": "Amount BRL",
+      "quantity": "Quantity",
+      "currency": "Currency",
+      "original_amount": "Original Amount",
+      "exchange_rate": "Exchange Rate",
+      "fees": "Fees",
+      "notes": "Notes"
+    },
+    "form": {
+      "title": "New Transaction",
+      "title_edit": "Edit Transaction",
+      "save": "Save Changes",
+      "asset": "Asset",
+      "new_asset": "+ New asset...",
+      "select_asset": "Select an asset",
+      "tx_type": "Transaction Type",
+      "date": "Transaction Date",
+      "quantity": "Quantity",
+      "quantity_required": "Enter the quantity",
+      "currency": "Original Currency",
+      "price_per_unit": "Price per Unit ({currency}) — optional",
+      "price_helper": "Filling this calculates the total automatically",
+      "amount": "Amount ({currency})",
+      "total": "Total ({currency})",
+      "amount_required": "Enter the amount",
+      "amount_invalid": "Invalid amount",
+      "exchange_rate": "Exchange Rate (1 {currency} = ? BRL)",
+      "exchange_rate_helper": "Enter the rate on the transaction date",
+      "exchange_rate_prefilled": "Carried over from {date} — update to the rate on this transaction's date",
+      "exchange_rate_fetched": "Market close from {date} (Yahoo) — adjust if your broker used a different rate",
+      "exchange_rate_invalid": "Invalid rate",
+      "oversell": "More than the {held} currently held",
+      "withholding": "Tax withheld at source ({currency}) — optional",
+      "withholding_helper": "Tax retained abroad on this dividend/coupon. Income is shown net of it.",
+      "withholding_exceeds_gross": "Cannot exceed the gross amount",
+      "total_brl": "Total in BRL (R$)",
+      "total_brl_helper": "Calculated by the server from amount, fee and rate.",
+      "total_brl_required": "Enter the amount in R$",
+      "fees": "Fees/Brokerage ({currency}) — optional",
+      "fees_helper": "Deducted from the amount before conversion to BRL",
+      "notes": "Notes — optional",
+      "submit": "Record Transaction"
+    },
+    "asset_form": {
+      "title": "New Asset",
+      "title_edit": "Edit Asset",
+      "edit_asset": "Edit asset",
+      "delete_asset": "Delete asset",
+      "category": "Category",
+      "name": "Name",
+      "name_required": "Enter the name",
+      "ticker": "Ticker (e.g. AAPL, BTC-USD)",
+      "ticker_helper": "Used to fetch the price from Yahoo Finance",
+      "currency": "Currency",
+      "account": "Broker / Account — optional",
+      "sector": "Sector — optional",
+      "country": "Country / Region — optional",
+      "notes": "Notes — optional",
+      "submit": "Create Asset",
+      "save": "Save Changes",
+      "create_error": "Error creating asset: {error}",
+      "risky_edit": "This asset has {count} transactions. Changing the category or currency changes how that history is valued.",
+      "delete_title": "Delete asset?",
+      "delete_body": "\"{name}\" will be removed. It has no transactions, so nothing else is lost."
+    }
   },
   "add_investment": {
     "title_add": "Add Investment",
