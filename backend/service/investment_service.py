@@ -818,10 +818,13 @@ def get_history(family_id: str, range_key: str) -> dict:
 # ─── Performance: TWR / XIRR vs S&P 500 ──────────────────────────────────────
 
 PERFORMANCE_RANGES = {'1y': 365, 'all': None}
+PERFORMANCE_CURRENCIES = ('BRL', 'USD')
 BENCHMARK_SYMBOL = '^GSPC'
+USD_BRL_SYMBOL = 'BRL=X'
 
 _benchmark_cache: dict = {}
 _BENCHMARK_CACHE_TTL = 3600
+_usd_brl_series_cache: dict = {}
 
 
 def get_benchmark_closes(start: date, end: date) -> dict:
@@ -847,7 +850,37 @@ def get_benchmark_closes(start: date, end: date) -> dict:
     return closes
 
 
-def get_performance(family_id: str, range_key: str) -> dict:
+def get_usd_brl_closes(start: date, end: date) -> dict:
+    """
+    Daily USD/BRL closes for [start, end], cached for an hour.
+
+    Same shape and failure policy as `get_benchmark_closes`: a fetch failure
+    returns an empty map and is NOT cached, so the next call retries instead of
+    freezing an outage into the hour.
+    """
+    key = (start.isoformat(), end.isoformat())
+    now = time.time()
+    cached = _usd_brl_series_cache.get(key)
+    if cached and (now - cached['ts']) < _BENCHMARK_CACHE_TTL:
+        return cached['data']
+    closes: dict = {}
+    try:
+        raw = yf.Ticker(USD_BRL_SYMBOL).history(
+            start=start.isoformat(),
+            end=(end + timedelta(days=1)).isoformat())
+        for idx, row in raw.iterrows():
+            close = float(row['Close'])
+            if close > 0:
+                closes[idx.date()] = close
+    except Exception as e:
+        print(f'[WARN] USD/BRL series fetch failed: {e}')
+    if closes:
+        _usd_brl_series_cache[key] = {'data': closes, 'ts': now}
+    return closes
+
+
+def get_performance(family_id: str, range_key: str,
+                    currency: str = 'BRL') -> dict:
     """
     TWR (chain-linked over observed snapshots), XIRR and an S&P 500 index
     aligned to the portfolio series. Not enough data is a 200 with nulls and
@@ -857,6 +890,10 @@ def get_performance(family_id: str, range_key: str) -> dict:
         raise ValueError(
             f'Invalid range {range_key!r}. '
             f'Allowed: {sorted(PERFORMANCE_RANGES)}')
+    if currency not in PERFORMANCE_CURRENCIES:
+        raise ValueError(
+            f'Invalid currency {currency!r}. '
+            f'Allowed: {sorted(PERFORMANCE_CURRENCIES)}')
 
     client = get_pg()
     query = (client.from_('portfolio_snapshots')
@@ -869,8 +906,19 @@ def get_performance(family_id: str, range_key: str) -> dict:
         query = query.gte('snapshot_date', cutoff)
     rows = query.execute().data or []
 
+    # Observed span, first snapshot to last — the only history the figures can
+    # honestly rest on. A lone snapshot spans no time, so the wait stays full.
+    observed_days = 0
+    if rows:
+        observed_days = (
+            date.fromisoformat(rows[-1]['snapshot_date'][:10])
+            - date.fromisoformat(rows[0]['snapshot_date'][:10])).days
+    avail = perf.availability(observed_days)
+
     empty = {'twr_pct': None, 'xirr_pct': None, 'benchmark': None,
-             'series': [], 'flows_convention': perf.FLOWS_CONVENTION}
+             'series': [], 'currency': currency,
+             'history_days': observed_days, **avail,
+             'flows_convention': perf.FLOWS_CONVENTION}
     if len(rows) < 2:
         return {**empty,
                 'warnings': ['At least two daily snapshots are needed — '
@@ -896,14 +944,52 @@ def get_performance(family_id: str, range_key: str) -> dict:
         if first_date < d <= last_date
     ]
 
+    currency_warnings: list = []
+    if currency == 'USD':
+        # Every date is converted at ITS OWN close, never at today's rate: a
+        # single rate applied across the window would smuggle FX movement into
+        # the return, which is exactly what the USD view exists to strip out.
+        rates = get_usd_brl_closes(first_date, last_date)
+        converted_vals, missing_vals = perf.convert_pairs(valuations, rates)
+        converted_flows, missing_flows = perf.convert_pairs(window_flows, rates)
+        missing = sorted(set(missing_vals) | set(missing_flows))
+        if missing:
+            # A partially converted series would be a silent lie about the
+            # return, so the figures are withheld rather than approximated.
+            return {**empty,
+                    'warnings': ['No USD/BRL close available for '
+                                 f'{len(missing)} date(s) starting '
+                                 f'{missing[0].isoformat()} — USD figures are '
+                                 'withheld rather than estimated.']}
+        valuations = converted_vals
+        window_flows = converted_flows
+        first_value = valuations[0][1]
+        last_value = valuations[-1][1]
+        currency_warnings.append(
+            'Portfolio and S&P 500 are both in USD; each day is converted at '
+            'its own USD/BRL close.')
+
     result = perf.twr(valuations, window_flows)
     warnings = list(result['warnings'])
 
-    span_days = (last_date - first_date).days
+    twr_pct = result['twr_pct']
+    twr_left = avail['twr_days_remaining']
+    if twr_left is not None:
+        # The chart still draws both indexed lines — a short series looks short.
+        # It is the headline number that waits, because a percentage carries no
+        # visible hint of how thin the window behind it is.
+        twr_pct = None
+        warnings.append(
+            f'TWR needs {perf.TWR_MIN_DAYS} days of history to mean '
+            f'something — {twr_left} day(s) to go.')
+
     xirr_pct = None
-    if span_days < 90:
-        warnings.append('History shorter than 90 days — an annualized '
-                        'return would mislead, so XIRR is withheld.')
+    xirr_left = avail['xirr_days_remaining']
+    if xirr_left is not None:
+        warnings.append(
+            f'XIRR needs {perf.XIRR_MIN_DAYS} days of history — '
+            f'{xirr_left} day(s) to go; annualizing a shorter window '
+            'would mislead.')
     else:
         cashflows = ([(first_date, -first_value)]
                      + [(d, -f) for d, f in window_flows]
@@ -927,13 +1013,16 @@ def get_performance(family_id: str, range_key: str) -> dict:
         final = next((i for i in reversed(bench_idx) if i is not None), None)
         benchmark = {'symbol': BENCHMARK_SYMBOL,
                      'return_pct': None if final is None else final - 100}
-        warnings.append('S&P 500 is indexed in USD, the portfolio in BRL — '
-                        'FX movement is not adjusted out.')
+        if currency == 'BRL':
+            warnings.append('S&P 500 is indexed in USD, the portfolio in BRL — '
+                            'FX movement is not adjusted out.')
     else:
         warnings.append('Benchmark data unavailable.')
 
-    return {'twr_pct': result['twr_pct'], 'xirr_pct': xirr_pct,
-            'benchmark': benchmark, 'series': series, 'warnings': warnings,
+    return {'twr_pct': twr_pct, 'xirr_pct': xirr_pct,
+            'benchmark': benchmark, 'series': series,
+            'warnings': warnings + currency_warnings, 'currency': currency,
+            'history_days': observed_days, **avail,
             'flows_convention': perf.FLOWS_CONVENTION}
 
 

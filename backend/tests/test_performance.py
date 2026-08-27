@@ -12,6 +12,10 @@ from datetime import date
 import pytest
 
 from service.portfolio.performance import (
+    TWR_MIN_DAYS,
+    XIRR_MIN_DAYS,
+    availability,
+    convert_pairs,
     external_flows,
     index_series,
     twr,
@@ -167,3 +171,87 @@ def test_dates_before_the_first_close_have_no_index():
 def test_empty_inputs_yield_empty_or_none():
     assert index_series({}, []) == []
     assert index_series({}, [date(2026, 1, 1)]) == [None]
+# ── convert_pairs ──────────────────────────────────────────────────────────
+
+def test_converts_each_day_at_its_own_rate():
+    """A BRL series becomes USD at the rate of the day it happened, never a
+    single rate applied to the whole window."""
+    rates = {date(2026, 1, 10): 5.0, date(2026, 1, 12): 4.0}
+    pairs = [(date(2026, 1, 10), 1000.0), (date(2026, 1, 12), 1000.0)]
+
+    converted, missing = convert_pairs(pairs, rates)
+
+    assert converted == [(date(2026, 1, 10), 200.0), (date(2026, 1, 12), 250.0)]
+    assert missing == []
+
+
+def test_day_without_a_close_uses_the_last_close_before_it():
+    """Markets skip weekends; Sunday is valued at Friday's close, like the
+    benchmark series."""
+    rates = {date(2026, 1, 9): 5.0}  # Friday
+    pairs = [(date(2026, 1, 11), 1000.0)]  # Sunday
+
+    converted, missing = convert_pairs(pairs, rates)
+
+    assert converted == [(date(2026, 1, 11), 200.0)]
+    assert missing == []
+
+
+def test_date_before_the_first_close_is_refused_not_guessed():
+    """No rate on or before the date means the figure cannot be computed. It is
+    reported as missing rather than converted at some other day's rate."""
+    rates = {date(2026, 1, 10): 5.0}
+    pairs = [(date(2026, 1, 5), 1000.0), (date(2026, 1, 10), 1000.0)]
+
+    converted, missing = convert_pairs(pairs, rates)
+
+    assert converted == [(date(2026, 1, 10), 200.0)]
+    assert missing == [date(2026, 1, 5)]
+
+
+def test_no_rates_at_all_refuses_every_date():
+    converted, missing = convert_pairs([(date(2026, 1, 10), 1000.0)], {})
+
+    assert converted == []
+    assert missing == [date(2026, 1, 10)]
+
+
+def test_a_zero_rate_is_not_a_rate():
+    """A zero or negative close would divide the portfolio into nonsense; it is
+    treated as absent, in line with the FX module's refusal to guess."""
+    converted, missing = convert_pairs([(date(2026, 1, 10), 1000.0)],
+                                       {date(2026, 1, 10): 0.0})
+
+    assert converted == []
+    assert missing == [date(2026, 1, 10)]
+# ── availability ───────────────────────────────────────────────────────────
+
+def test_fresh_history_owes_the_full_wait_for_both_figures():
+    avail = availability(0)
+
+    assert avail['twr_days_remaining'] == TWR_MIN_DAYS
+    assert avail['xirr_days_remaining'] == XIRR_MIN_DAYS
+
+
+def test_a_figure_becomes_available_the_day_its_threshold_is_reached():
+    """None means available — the caller shows a number instead of a countdown."""
+    avail = availability(TWR_MIN_DAYS)
+
+    assert avail['twr_days_remaining'] is None
+    assert avail['xirr_days_remaining'] == XIRR_MIN_DAYS - TWR_MIN_DAYS
+
+
+def test_the_day_before_a_threshold_still_owes_one_day():
+    assert availability(TWR_MIN_DAYS - 1)['twr_days_remaining'] == 1
+
+
+def test_long_history_owes_nothing():
+    avail = availability(XIRR_MIN_DAYS + 500)
+
+    assert avail['twr_days_remaining'] is None
+    assert avail['xirr_days_remaining'] is None
+
+
+def test_twr_unlocks_before_xirr():
+    """A two-week return is reportable; annualizing it is not."""
+    assert TWR_MIN_DAYS < XIRR_MIN_DAYS

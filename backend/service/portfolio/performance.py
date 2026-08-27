@@ -20,6 +20,13 @@ from .fx import latest_close_on_or_before, transaction_rate
 
 FLOWS_CONVENTION = 'net_external'  # documented in the API response
 
+# How much observed history each figure needs before it means anything. A
+# return chained over three days is noise wearing a percentage sign, and
+# annualizing such a window explodes — so both are withheld, and the caller is
+# told how long the wait still is instead of being handed a misleading number.
+TWR_MIN_DAYS = 14
+XIRR_MIN_DAYS = 90
+
 
 def _parse_date(raw) -> date:
     return date.fromisoformat(raw[:10]) if isinstance(raw, str) else raw
@@ -47,6 +54,45 @@ def external_flows(rows) -> list:
         d = _parse_date(r.get('transaction_date'))
         per_date[d] = per_date.get(d, 0.0) + amount
     return sorted(per_date.items())
+
+
+def availability(observed_days: int) -> dict:
+    """
+    Days of history still owed before each figure may be shown.
+
+    ``None`` means the threshold is met and the figure can be reported; a
+    positive integer is the remaining wait, which the UI counts down instead of
+    showing an empty tile with no explanation.
+    """
+    def remaining(minimum: int) -> int | None:
+        left = minimum - observed_days
+        return left if left > 0 else None
+
+    return {'twr_days_remaining': remaining(TWR_MIN_DAYS),
+            'xirr_days_remaining': remaining(XIRR_MIN_DAYS)}
+
+
+def convert_pairs(pairs, rates) -> tuple[list, list]:
+    """
+    Restate ``(date, BRL amount)`` pairs in the currency priced by ``rates``
+    (``{date: BRL per 1 unit}``), each date at the close that applies to it.
+
+    Returns ``(converted, missing)``. A date with no usable close on or before
+    it lands in ``missing`` and is dropped from ``converted``: converting it at
+    some other day's rate would fold FX movement back into the figure, which is
+    the very thing a single-currency view exists to remove.
+    """
+    usable = {d: r for d, r in rates.items() if r and r > 0}
+    converted: list = []
+    missing: list = []
+    for d, amount in pairs:
+        found = latest_close_on_or_before(usable, d)
+        if found is None:
+            missing.append(d)
+            continue
+        _rate_date, rate = found
+        converted.append((d, amount / rate))
+    return converted, missing
 
 
 def twr(valuations, flows) -> dict:

@@ -196,11 +196,12 @@
       "yield_on_cost": "Yield on cost"
     },
     "performance": {
-      "title": "Desempenho vs S&P 500",
+      "title": "Desempenho vs S&P 500 ({currency})",
       "portfolio": "Portfólio",
       "twr": "TWR (período)",
       "xirr": "XIRR (anual)",
       "benchmark": "S&P 500",
+      "days_left": "em {days} dias",
       "empty": "O desempenho precisa de alguns dias de snapshots — o histórico se constrói a partir das visitas.",
       "ranges": {
         "1y": "1A",

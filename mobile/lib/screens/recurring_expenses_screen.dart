@@ -48,8 +48,10 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
       setState(() {
         _recurringExpenses =
             rawRecurring.map((e) => RecurringExpense.fromJson(e)).toList();
-        // Recurring is a per-person concept; hide the family-level virtual profile.
-        _users = familyData.profiles.where((u) => !u.isVirtual).toList();
+        // Includes the family-level virtual profile ("General") so a shared bill
+        // (rent, internet) can be recurring without being charged to one person.
+        // Backend orders real profiles first, so `_users.first` stays a human.
+        _users = familyData.profiles;
         _categories = familyData.categories;
         _paymentMethods = familyData.paymentMethods;
       });

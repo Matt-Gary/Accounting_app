@@ -262,7 +262,7 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
         ],
         EquityCurve(showUsd: _displayCurrency == 'USD'),
         const SizedBox(height: 12),
-        const PerformanceChart(),
+        PerformanceChart(showUsd: _displayCurrency == 'USD'),
         const SizedBox(height: 12),
         AllocationBars(
           positions: _portfolio!.allocationPositions,
