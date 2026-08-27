@@ -63,21 +63,21 @@ def materialize_recurring_expenses(month, year, user_id):
     Only creates expenses for months on or after the template creation month.
     """
     client = get_pg()
-    
+
     # Get all active recurring expenses for this user
     recurring_defs = client.from_("recurring_expenses")\
         .select("*")\
         .eq("user_id", user_id)\
         .eq("active", True)\
         .execute().data
-        
+
     if not recurring_defs:
         return
-    
+
     # Get existing materialized expenses for this period to avoid duplicates
     start_date, end_date = get_query_range_for_month(month, year)
     query_end = end_date + timedelta(days=1)
-    
+
     existing_expenses = client.from_("expenses")\
         .select("id, recurring_id, spent_at")\
         .eq("user_id", user_id)\
@@ -85,7 +85,7 @@ def materialize_recurring_expenses(month, year, user_id):
         .gte("spent_at", start_date.isoformat())\
         .lt("spent_at", query_end.isoformat())\
         .execute().data
-    
+
     # Map recurring_id -> list of spent_at dates already created
     created_map = {}
     for exp in existing_expenses:
@@ -93,79 +93,89 @@ def materialize_recurring_expenses(month, year, user_id):
         if rid not in created_map:
             created_map[rid] = []
         created_map[rid].append(parse(exp['spent_at']).date())
-    
-    # Process each recurring definition
+
+    # Process each recurring definition.
+    # Every step inside is a network round-trip, so any of them can fail. Before this
+    # guard a single failure aborted the whole loop - and, through the caller, every
+    # REMAINING family member too - so the month came back holding only part of its
+    # recurring expenses, which looks exactly like "never configured". Fail one
+    # definition, log it, keep going.
     for rdef in recurring_defs:
-        rid = rdef['id']
-        day = rdef['day_of_month'] or 1
-        
-        print(f"[DEBUG] Processing recurring '{rdef.get('description')}' (id={rid}, day={day}) for {month}/{year}")
-
-        # Calculate target date, handling end-of-month edge cases
         try:
-            target_date = date(year, month, day)
-        except ValueError:
-            # Handle cases like Feb 31 -> Feb 28/29
-            import calendar
-            last_day = calendar.monthrange(year, month)[1]
-            target_date = date(year, month, min(day, last_day))
-        
-        print(f"[DEBUG] Target date: {target_date}")
+            _materialize_one_recurring(client, rdef, month, year, user_id, created_map)
+        except Exception as e:
+            print(f"[ERROR] Skipping recurring {rdef.get('id')} "
+                  f"('{rdef.get('description')}') for {month}/{year}: {e}")
 
-        # Don't backdate: only allow expenses for the creation month or later.
-        # e.g. created on March 20 with day_of_month=5 → March 5 IS allowed (same month).
-        created_at_date = parse(rdef['created_at']).date()
-        print(f"[DEBUG] Created at: {created_at_date}")
 
-        created_month_start = date(created_at_date.year, created_at_date.month, 1)
-        if target_date < created_month_start:
-            print(f"[DEBUG] SKIPPING: Target {target_date} is before creation month {created_month_start}")
-            continue
-        
-        # Check if already materialized for this month
-        already_created = False
-        if rid in created_map:
-            for dt in created_map[rid]:
-                # We check strict month match for materialization to avoid duplicates in same month
-                if dt.month == month and dt.year == year:
-                    already_created = True
-                    print(f"[DEBUG] SKIPPING: Already created for this month on {dt}")
-                    break
-        
-        if not already_created:
-            # Double-check with a fresh DB query to prevent duplicates from concurrent requests
-            month_start = date(year, month, 1)
-            if month == 12:
-                month_end = date(year + 1, 1, 1)
-            else:
-                month_end = date(year, month + 1, 1)
-            existing = client.from_("expenses")\
-                .select("id", count="exact")\
-                .eq("recurring_id", rid)\
-                .gte("spent_at", month_start.isoformat())\
-                .lt("spent_at", month_end.isoformat())\
-                .execute()
-            if existing.data and len(existing.data) > 0:
-                print(f"[DEBUG] SKIPPING: Fresh DB check found existing expense for {rid} in {month}/{year}")
-                continue
+def _materialize_one_recurring(client, rdef, month, year, user_id, created_map):
+    """
+    Materializes ONE recurring definition for one month. Raises on DB errors so the
+    caller can log that single definition and continue with the next one.
+    """
+    rid = rdef['id']
+    day = rdef['day_of_month'] or 1
 
-            print(f"[DEBUG] MATERIALIZING: Creating expense for {target_date}")
-            # Create the expense
-            new_exp = {
-                "user_id": user_id,
-                "amount": rdef['amount'],
-                "category_key": rdef['category_key'],
-                "payment_method_id": rdef['payment_method_id'],
-                "spent_at": target_date.isoformat(),
-                "recurring_id": rid,
-                "comment": f"Recurring: {rdef['description'] or ''}".strip()
-            }
-            if rdef.get('family_id'):
-                new_exp['family_id'] = rdef['family_id']
-            try:
-                client.from_("expenses").insert(new_exp).execute()
-            except Exception as e:
-                print(f"[ERROR] Failed to materialize recurring {rid} for {target_date}: {e}")
+    print(f"[DEBUG] Processing recurring '{rdef.get('description')}' (id={rid}, day={day}) for {month}/{year}")
+
+    # Calculate target date, handling end-of-month edge cases
+    try:
+        target_date = date(year, month, day)
+    except ValueError:
+        # Handle cases like Feb 31 -> Feb 28/29
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        target_date = date(year, month, min(day, last_day))
+
+    print(f"[DEBUG] Target date: {target_date}")
+
+    # Don't backdate: only allow expenses for the creation month or later.
+    # e.g. created on March 20 with day_of_month=5 -> March 5 IS allowed (same month).
+    created_at_date = parse(rdef['created_at']).date()
+    print(f"[DEBUG] Created at: {created_at_date}")
+
+    created_month_start = date(created_at_date.year, created_at_date.month, 1)
+    if target_date < created_month_start:
+        print(f"[DEBUG] SKIPPING: Target {target_date} is before creation month {created_month_start}")
+        return
+
+    # Check if already materialized for this month
+    if rid in created_map:
+        for dt in created_map[rid]:
+            # We check strict month match for materialization to avoid duplicates in same month
+            if dt.month == month and dt.year == year:
+                print(f"[DEBUG] SKIPPING: Already created for this month on {dt}")
+                return
+
+    # Double-check with a fresh DB query to prevent duplicates from concurrent requests
+    month_start = date(year, month, 1)
+    if month == 12:
+        month_end = date(year + 1, 1, 1)
+    else:
+        month_end = date(year, month + 1, 1)
+    existing = client.from_("expenses")\
+        .select("id", count="exact")\
+        .eq("recurring_id", rid)\
+        .gte("spent_at", month_start.isoformat())\
+        .lt("spent_at", month_end.isoformat())\
+        .execute()
+    if existing.data and len(existing.data) > 0:
+        print(f"[DEBUG] SKIPPING: Fresh DB check found existing expense for {rid} in {month}/{year}")
+        return
+
+    print(f"[DEBUG] MATERIALIZING: Creating expense for {target_date}")
+    new_exp = {
+        "user_id": user_id,
+        "amount": rdef['amount'],
+        "category_key": rdef['category_key'],
+        "payment_method_id": rdef['payment_method_id'],
+        "spent_at": target_date.isoformat(),
+        "recurring_id": rid,
+        "comment": f"Recurring: {rdef['description'] or ''}".strip()
+    }
+    if rdef.get('family_id'):
+        new_exp['family_id'] = rdef['family_id']
+    client.from_("expenses").insert(new_exp).execute()
 
 # =====================================================
 
@@ -602,8 +612,9 @@ def investment_performance():
     if not g.family_id:
         return jsonify({"error": "No family found"}), 400
     range_key = request.args.get('range', '1y')
+    currency = request.args.get('currency', 'BRL')
     try:
-        return jsonify(get_performance(g.family_id, range_key))
+        return jsonify(get_performance(g.family_id, range_key, currency))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -755,27 +766,42 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
         
     if family_id:
         # Family-scoped: materialize for all real family members then filter by family_id.
-        # Virtual profiles (is_virtual=TRUE) never own recurring rows, so skip them.
+        # Virtual profiles (e.g. "General") are included: shared recurring bills are
+        # owned by them, and skipping them would leave those rows unmaterialized.
         try:
             family_users = client.from_("profiles").select("id")\
-                .eq("family_id", family_id).eq("is_virtual", False).execute().data
-            for user in family_users:
-                materialize_recurring_expenses(month, year, user['id'])
+                .eq("family_id", family_id).execute().data
         except Exception as e:
-            print(f"Error materializing for family: {e}")
+            print(f"[ERROR] Could not list family profiles for materialization: {e}")
+            family_users = []
+        for user in family_users:
+            # Per-profile guard: one member's failure must not cost the OTHER members
+            # their recurring expenses for this month.
+            try:
+                materialize_recurring_expenses(month, year, user['id'])
+            except Exception as e:
+                print(f"[ERROR] Materialization failed for profile {user['id']}: {e}")
         query = query.eq("family_id", family_id)
     elif user_id:
-        # Fallback: filter by specific user (for backwards compat / single-user case)
-        materialize_recurring_expenses(month, year, user_id)
+        # Fallback: filter by specific user (for backwards compat / single-user case).
+        # Guarded: a materialization failure must not turn a read of the month into a 500.
+        try:
+            materialize_recurring_expenses(month, year, user_id)
+        except Exception as e:
+            print(f"[ERROR] Materialization failed for user {user_id}: {e}")
         query = query.eq("user_id", user_id)
     else:
         # No filter - materialize for all users (should not happen in normal flow)
         try:
             all_users = client.from_("profiles").select("id").execute().data
-            for user in all_users:
-                materialize_recurring_expenses(month, year, user['id'])
         except Exception as e:
-            print(f"Error materializing for all users: {e}")
+            print(f"[ERROR] Could not list profiles for materialization: {e}")
+            all_users = []
+        for user in all_users:
+            try:
+                materialize_recurring_expenses(month, year, user['id'])
+            except Exception as e:
+                print(f"[ERROR] Materialization failed for profile {user['id']}: {e}")
         
     res = query.execute()
     raw_expenses = res.data

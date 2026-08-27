@@ -8,8 +8,8 @@ import '../models/models.dart';
 
 class BackendService {
   // Use 10.0.2.2 for Android Simulator localhost, or your machine IP for real device/iOS simulator
-  //static const String baseUrl = 'http://127.0.0.1:5000';
-  static const String baseUrl = 'http://72.60.137.97:5005';
+  static const String baseUrl = 'http://127.0.0.1:5000';
+  //static const String baseUrl = 'http://72.60.137.97:5005';
 
   Map<String, String> _authHeaders({bool json = false}) {
     final session = Supabase.instance.client.auth.currentSession;
@@ -252,9 +252,13 @@ class BackendService {
   }
 
   /// TWR / XIRR and the S&P 500 comparison series. [range]: 1y or all.
-  Future<Map<String, dynamic>> getPerformance(String range) async {
+  /// [currency] is BRL or USD: in USD the backend restates every valuation and
+  /// flow at that day's own USD/BRL close, so the benchmark comparison is
+  /// like-for-like instead of carrying an unadjusted FX gap.
+  Future<Map<String, dynamic>> getPerformance(String range,
+      {String currency = 'BRL'}) async {
     final uri = Uri.parse('$baseUrl/investments/performance')
-        .replace(queryParameters: {'range': range});
+        .replace(queryParameters: {'range': range, 'currency': currency});
     final response = await _withAuth((h) => http.get(uri, headers: h));
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;

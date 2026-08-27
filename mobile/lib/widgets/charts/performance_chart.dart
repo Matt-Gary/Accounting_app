@@ -12,8 +12,14 @@ import '../../services/backend_service.dart';
 /// which is what makes the benchmark comparison legitimate. Backend warnings
 /// (short history, FX note) are surfaced verbatim under the chart: the chart
 /// must not look more precise than the data allows.
+///
+/// [showUsd] follows the screen's currency toggle. It is not a display-only
+/// switch: the whole return is recomputed server-side in that currency, so the
+/// figures change with it. Flipping it therefore refetches.
 class PerformanceChart extends StatefulWidget {
-  const PerformanceChart({super.key});
+  final bool showUsd;
+
+  const PerformanceChart({super.key, this.showUsd = false});
 
   @override
   State<PerformanceChart> createState() => _PerformanceChartState();
@@ -30,6 +36,8 @@ class _PerformanceChartState extends State<PerformanceChart> {
   String? _error;
   double? _twrPct;
   double? _xirrPct;
+  int? _twrDaysLeft;
+  int? _xirrDaysLeft;
   double? _benchmarkPct;
   List<DateTime> _dates = const [];
   List<double> _portfolio = const [];
@@ -44,18 +52,28 @@ class _PerformanceChartState extends State<PerformanceChart> {
     _load();
   }
 
+  @override
+  void didUpdateWidget(PerformanceChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A currency change is a different computation, not a re-format.
+    if (oldWidget.showUsd != widget.showUsd) _load();
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final data = await _backendService.getPerformance(_range);
+      final data = await _backendService.getPerformance(_range,
+          currency: widget.showUsd ? 'USD' : 'BRL');
       if (!mounted) return;
       final series = (data['series'] as List? ?? const []);
       setState(() {
         _twrPct = (data['twr_pct'] as num?)?.toDouble();
         _xirrPct = (data['xirr_pct'] as num?)?.toDouble();
+        _twrDaysLeft = (data['twr_days_remaining'] as num?)?.toInt();
+        _xirrDaysLeft = (data['xirr_days_remaining'] as num?)?.toInt();
         _benchmarkPct =
             ((data['benchmark'] as Map<String, dynamic>?)?['return_pct']
                     as num?)
@@ -100,17 +118,29 @@ class _PerformanceChartState extends State<PerformanceChart> {
       ? Colors.grey
       : (v >= 0 ? const Color(0xFF1F7A1F) : const Color(0xFFC00000));
 
-  Widget _tile(String labelKey, double? pct) => Column(
+  /// [daysLeft] is the backend's countdown. Non-null means the figure is
+  /// withheld for want of TIME, not of data — saying how long beats a bare
+  /// dash that reads like something is broken.
+  Widget _tile(String labelKey, double? pct, [int? daysLeft]) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(labelKey.tr(),
               style: const TextStyle(fontSize: 10, color: Colors.grey)),
           const SizedBox(height: 2),
-          Text(_pctOrDash(pct),
-              style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: _pctColor(pct))),
+          if (pct == null && daysLeft != null)
+            Text(
+                'investments.performance.days_left'
+                    .tr(namedArgs: {'days': '$daysLeft'}),
+                style: const TextStyle(
+                    fontSize: 11,
+                    fontStyle: FontStyle.italic,
+                    color: Colors.grey))
+          else
+            Text(_pctOrDash(pct),
+                style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: _pctColor(pct))),
         ],
       );
 
@@ -141,7 +171,10 @@ class _PerformanceChartState extends State<PerformanceChart> {
               children: [
                 Icon(Icons.speed, size: 16, color: Colors.grey.shade600),
                 const SizedBox(width: 6),
-                Text('investments.performance.title'.tr(),
+                Text(
+                    'investments.performance.title'.tr(namedArgs: {
+                      'currency': widget.showUsd ? 'USD' : 'BRL'
+                    }),
                     style: const TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w600)),
                 const Spacer(),
@@ -155,8 +188,10 @@ class _PerformanceChartState extends State<PerformanceChart> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                _tile('investments.performance.twr', _twrPct),
-                _tile('investments.performance.xirr', _xirrPct),
+                _tile('investments.performance.twr', _twrPct,
+                    _twrDaysLeft),
+                _tile('investments.performance.xirr', _xirrPct,
+                    _xirrDaysLeft),
                 _tile('investments.performance.benchmark', _benchmarkPct),
               ],
             ),
