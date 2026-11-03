@@ -8,13 +8,12 @@ const rateToday = 5.1873;
 const investedBrl = depositUsd * rateAtDeposit; // 9709.00
 
 void main() {
-  group('native view returns the exact figure', () {
-    test('USD asset in USD view is not round-tripped through today rate', () {
+  group('USD view returns the exact USD figure', () {
+    test('cost is not round-tripped through today rate', () {
       final r = pickAmount(
         displayCurrency: 'USD',
-        nativeCurrency: 'USD',
         brl: investedBrl,
-        native: depositUsd,
+        usd: depositUsd,
         usdBrlRate: rateToday,
       );
       expect(r.value, closeTo(1900.00, 1e-9));
@@ -30,36 +29,32 @@ void main() {
 
       final fixed = pickAmount(
         displayCurrency: 'USD',
-        nativeCurrency: 'USD',
         brl: investedBrl,
-        native: depositUsd,
+        usd: depositUsd,
         usdBrlRate: rateToday,
       ).value;
       expect(fixed, closeTo(1900.00, 1e-9));
       expect(fixed - broken, closeTo(28.31, 0.01));
     });
 
-    test('a deposit shows no gain in its own currency', () {
-      // Cost and value are the same $1,900 — there is nothing to gain on
-      // dollars you deposited and still hold.
-      final invested = pickAmount(
-        displayCurrency: 'USD', nativeCurrency: 'USD',
-        brl: investedBrl, native: depositUsd, usdBrlRate: rateToday,
-      );
-      final value = pickAmount(
-        displayCurrency: 'USD', nativeCurrency: 'USD',
-        brl: depositUsd * rateToday, native: depositUsd,
+    test('a BRL purchase of any asset shows its USD cost, not its BRL one', () {
+      // R$ 550 000 paid when USD/BRL closed at 5.50: the backend sends $100 000.
+      final r = pickAmount(
+        displayCurrency: 'USD',
+        brl: 550000.0,
+        usd: 100000.0,
         usdBrlRate: rateToday,
       );
-      expect(value.value - invested.value, closeTo(0.0, 1e-9));
+      expect(r.value, 100000.0);
+      expect(r.exact, isTrue);
     });
   });
 
   group('BRL view keeps the historical rate', () {
     test('cost stays at the rate it was booked at', () {
       final r = pickAmount(
-        displayCurrency: 'BRL', nativeCurrency: 'USD',
-        brl: investedBrl, native: depositUsd, usdBrlRate: rateToday,
+        displayCurrency: 'BRL',
+        brl: investedBrl, usd: depositUsd, usdBrlRate: rateToday,
       );
       expect(r.value, closeTo(9709.00, 1e-9));
       expect(r.currency, 'BRL');
@@ -68,23 +63,23 @@ void main() {
 
     test('the FX move is real and visible in BRL', () {
       final invested = pickAmount(
-        displayCurrency: 'BRL', nativeCurrency: 'USD',
-        brl: investedBrl, native: depositUsd, usdBrlRate: rateToday,
+        displayCurrency: 'BRL',
+        brl: investedBrl, usd: depositUsd, usdBrlRate: rateToday,
       ).value;
       final value = pickAmount(
-        displayCurrency: 'BRL', nativeCurrency: 'USD',
-        brl: depositUsd * rateToday, native: depositUsd,
+        displayCurrency: 'BRL',
+        brl: depositUsd * rateToday, usd: depositUsd,
         usdBrlRate: rateToday,
       ).value;
       expect(value - invested, closeTo(146.87, 0.05));
     });
   });
 
-  group('cross-currency has no exact answer', () {
-    test('EUR asset in USD view is converted and flagged inexact', () {
+  group('missing USD figure', () {
+    test('falls back to today rate and is flagged inexact', () {
       final r = pickAmount(
-        displayCurrency: 'USD', nativeCurrency: 'EUR',
-        brl: 6000.0, native: 1000.0, usdBrlRate: 5.0,
+        displayCurrency: 'USD',
+        brl: 6000.0, usd: null, usdBrlRate: 5.0,
       );
       expect(r.value, closeTo(1200.0, 1e-9));
       expect(r.currency, 'USD');
@@ -92,20 +87,10 @@ void main() {
           reason: 'converted from BRL, not read from a USD field');
     });
 
-    test('the EUR native figure is never mistaken for USD', () {
-      final r = pickAmount(
-        displayCurrency: 'USD', nativeCurrency: 'EUR',
-        brl: 6000.0, native: 1000.0, usdBrlRate: 5.0,
-      );
-      expect(r.value, isNot(closeTo(1000.0, 1e-9)));
-    });
-  });
-
-  group('missing rate is never invented', () {
     test('a zero rate does not divide by zero or fabricate a number', () {
       final r = pickAmount(
-        displayCurrency: 'USD', nativeCurrency: 'EUR',
-        brl: 6000.0, native: 1000.0, usdBrlRate: 0,
+        displayCurrency: 'USD',
+        brl: 6000.0, usd: null, usdBrlRate: 0,
       );
       expect(r.value.isFinite, isTrue);
       expect(r.value, 6000.0);
@@ -115,41 +100,73 @@ void main() {
 
     test('negative rate is treated as unavailable', () {
       final r = pickAmount(
-        displayCurrency: 'USD', nativeCurrency: 'EUR',
-        brl: 6000.0, native: 1000.0, usdBrlRate: -1,
+        displayCurrency: 'USD',
+        brl: 6000.0, usd: null, usdBrlRate: -1,
       );
       expect(r.currency, 'BRL');
     });
-  });
 
-  group('BRL-denominated assets', () {
-    test('render identically in both toggle states', () {
-      const brlAsset = 5000.0;
-      final inBrl = pickAmount(
-        displayCurrency: 'BRL', nativeCurrency: 'BRL',
-        brl: brlAsset, native: brlAsset, usdBrlRate: rateToday,
-      );
-      expect(inBrl.value, brlAsset);
-      expect(inBrl.exact, isTrue);
-    });
-
-    test('a BRL asset viewed in USD converts at today rate, flagged inexact',
-        () {
+    test('the BRL view never needs it', () {
       final r = pickAmount(
-        displayCurrency: 'USD', nativeCurrency: 'BRL',
-        brl: 5187.3, native: 5187.3, usdBrlRate: rateToday,
+        displayCurrency: 'BRL',
+        brl: 6000.0, usd: null, usdBrlRate: 5.0,
       );
-      expect(r.value, closeTo(1000.0, 0.01));
-      expect(r.exact, isFalse);
+      expect(r, const DisplayAmount(
+          value: 6000.0, currency: 'BRL', exact: true));
     });
   });
 
-  group('isNativeView', () {
-    test('matches only when the currencies agree', () {
-      expect(isNativeView('USD', 'USD'), isTrue);
-      expect(isNativeView('BRL', 'BRL'), isTrue);
-      expect(isNativeView('USD', 'EUR'), isFalse);
-      expect(isNativeView('BRL', 'USD'), isFalse);
+  group('per-asset currency: EUR stays EUR in the foreign view', () {
+    test('foreign view is USD for BRL and USD assets', () {
+      expect(assetDisplayCurrency('USD', 'USD'), 'USD');
+      expect(assetDisplayCurrency('USD', 'BRL'), 'USD');
+    });
+
+    test('foreign view keeps a third currency', () {
+      expect(assetDisplayCurrency('USD', 'EUR'), 'EUR');
+      expect(assetDisplayCurrency('USD', 'PLN'), 'PLN');
+    });
+
+    test('BRL view is BRL for every asset', () {
+      expect(assetDisplayCurrency('BRL', 'EUR'), 'BRL');
+      expect(assetDisplayCurrency('BRL', 'USD'), 'BRL');
+    });
+
+    test('EUR asset in USD view shows its exact EUR figure', () {
+      final r = pickAssetAmount(
+        displayCurrency: 'USD', nativeCurrency: 'EUR',
+        brl: 6000.0, usd: 1100.0, native: 1000.0, usdBrlRate: 5.0,
+      );
+      expect(r, const DisplayAmount(
+          value: 1000.0, currency: 'EUR', exact: true));
+    });
+
+    test('EUR asset in BRL view shows BRL', () {
+      final r = pickAssetAmount(
+        displayCurrency: 'BRL', nativeCurrency: 'EUR',
+        brl: 6000.0, usd: 1100.0, native: 1000.0, usdBrlRate: 5.0,
+      );
+      expect(r.currency, 'BRL');
+      expect(r.value, 6000.0);
+    });
+
+    test('BRL asset in USD view shows its USD figure, not the native one', () {
+      final r = pickAssetAmount(
+        displayCurrency: 'USD', nativeCurrency: 'BRL',
+        brl: 5500.0, usd: 1000.0, native: 5500.0, usdBrlRate: 5.0,
+      );
+      expect(r, const DisplayAmount(
+          value: 1000.0, currency: 'USD', exact: true));
+    });
+
+    test('unavailable EUR figure degrades to USD, labelled as such', () {
+      final r = pickAssetAmount(
+        displayCurrency: 'USD', nativeCurrency: 'EUR',
+        brl: 6000.0, usd: 1100.0, native: 0.0, nativeAvailable: false,
+        usdBrlRate: 5.0,
+      );
+      expect(r.currency, 'USD');
+      expect(r.value, 1100.0);
     });
   });
 }

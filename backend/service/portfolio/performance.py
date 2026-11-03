@@ -32,10 +32,18 @@ def _parse_date(raw) -> date:
     return date.fromisoformat(raw[:10]) if isinstance(raw, str) else raw
 
 
-def external_flows(rows) -> list:
-    """Per-day net external cash flow, BRL, sorted by date."""
+def external_flows(rows, categories=None) -> list:
+    """
+    Per-day net external cash flow, BRL, sorted by date.
+
+    With `categories`, only rows whose `category` is in it count — the
+    portfolio boundary is then that set of categories, so money moving from a
+    bank account into broker cash is an inflow, and the bank side is ignored.
+    """
     per_date: dict = {}
     for r in rows:
+        if categories is not None and r.get('category') not in categories:
+            continue
         kind = (r.get('transaction_type') or '').lower()
         brl = float(r.get('brl_amount') or 0)
         if kind in BUY_TYPES:

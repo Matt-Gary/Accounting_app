@@ -11,7 +11,11 @@ from datetime import date
 import pytest
 
 from service.portfolio import cost_basis as cb
-from service.portfolio.dividends import trailing_income_brl, yield_on_cost_pct
+from service.portfolio.dividends import (
+    trailing_income,
+    trailing_income_brl,
+    yield_on_cost_pct,
+)
 
 AS_OF = date(2026, 8, 13)
 
@@ -85,3 +89,18 @@ def test_yield_on_cost():
 def test_yield_on_cost_is_none_without_invested_capital(invested):
     """None, not zero — a closed position has no yield, not a 0% yield."""
     assert yield_on_cost_pct(500.0, invested) is None
+
+
+def test_trailing_income_over_another_field_is_none_when_a_step_lacks_it():
+    from types import SimpleNamespace as S
+    as_of = date(2024, 12, 31)
+    trail = [
+        S(transaction_type='dividend', transaction_date=date(2024, 6, 1),
+          income_brl=50.0, income_orig=10.0),
+        S(transaction_type='dividend', transaction_date=date(2024, 7, 1),
+          income_brl=55.0, income_orig=None),
+    ]
+    assert trailing_income(trail[:1], as_of, attr='income_orig') == \
+        pytest.approx(10.0)
+    assert trailing_income(trail, as_of, attr='income_orig') is None
+    assert trailing_income_brl(trail, as_of) == pytest.approx(105.0)

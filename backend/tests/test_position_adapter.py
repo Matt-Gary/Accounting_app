@@ -92,3 +92,37 @@ def test_totals_agree_with_the_trail():
     ))
     trail_realized = sum(s.realized_brl for s in pos['audit_trail'])
     assert pos['realized_gains_brl'] == pytest.approx(trail_realized)
+
+
+def test_mixed_currency_ledger_keeps_the_native_average_in_the_asset_currency():
+    """A BRL purchase of a USD asset enters the USD average at the trade-date close."""
+    from datetime import date
+    pos = _compute_position(
+        rows(
+            buy_row(quantity=1, original_amount=100_000.0),
+            buy_row(id='tx-2', created_at='2024-02-01T00:00:00',
+                    transaction_date='2024-02-01', quantity=1,
+                    original_amount=550_000.0, original_currency='BRL',
+                    exchange_rate=None),
+        ),
+        asset_currency='USD',
+        asset_closes={date(2024, 2, 1): 5.5},
+    )
+    assert pos['native_available'] is True
+    assert pos['avg_cost_original'] == pytest.approx(100_000.0)
+    assert pos['avg_cost_brl'] == pytest.approx(525_000.0)
+
+
+def test_native_figures_are_null_when_a_trade_date_close_is_missing():
+    pos = _compute_position(
+        rows(buy_row(original_currency='BRL', exchange_rate=None)),
+        asset_currency='USD',
+        asset_closes={},
+    )
+    assert pos['native_available'] is False
+    for key in ('avg_cost_original', 'total_invested_original',
+                'realized_gains_original', 'dividends_original',
+                'fees_orig_total'):
+        assert pos[key] is None, key
+    # The BRL side is unaffected.
+    assert pos['avg_cost_brl'] == pytest.approx(100.0)

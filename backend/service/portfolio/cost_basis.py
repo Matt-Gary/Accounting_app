@@ -14,13 +14,19 @@ another:
 Computing ``avg_brl`` as ``avg_orig * current_rate`` is the single most common
 way this calculation goes wrong; it would silently re-price historical purchases
 at today's rate.
+
+A ledger may mix currencies (a USD asset bought once in BRL). ``avg_orig`` is
+always in the *asset's* currency: a transaction in any other currency enters it
+through its exact BRL figure divided by the asset currency's close on the trade
+date. Summing the raw BRL amount into a USD average is what once reported a
+Bitcoin average of ~182 000 "USD".
 """
 
 from dataclasses import dataclass, replace
 from datetime import date
 from typing import Protocol
 
-from .fx import transaction_rate
+from .fx import BRL, latest_close_on_or_before, transaction_rate
 
 BUY_TYPES = ('buy', 'deposit')
 SELL_TYPES = ('sell', 'withdrawal')
@@ -82,6 +88,32 @@ def effective_quantity(transaction_type: str, quantity, original_amount) -> floa
     return qty
 
 
+def linked_cash_movement(transaction_type: str, original_amount: float,
+                         fees_original: float,
+                         withholding_tax_original: float) -> tuple[str, float] | None:
+    """
+    The cash-account movement a trade causes, in the trade's own currency, or
+    None when it moves no cash (deposits/withdrawals ARE cash movements).
+
+    A buy takes what was actually paid (amount + fee) out; a sell puts what was
+    actually received (amount − fee) in; income puts the net (gross −
+    withholding) in. Logging this by hand as a separate row was easy to forget,
+    and a forgotten withdrawal counts the same money twice.
+    """
+    kind = (transaction_type or '').lower()
+    amount = float(original_amount or 0)
+    if kind == 'buy':
+        moved = ('withdrawal', amount + float(fees_original or 0))
+    elif kind == 'sell':
+        moved = ('deposit', amount - float(fees_original or 0))
+    elif kind in INCOME_TYPES:
+        moved = ('deposit', amount - float(withholding_tax_original or 0))
+    else:
+        return None
+    # Nothing to move (e.g. income fully withheld) is not a zero-value row.
+    return moved if moved[1] > QTY_EPSILON else None
+
+
 def brl_amount_for(transaction_type: str, original_amount: float,
                    fees_original: float, original_currency: str,
                    exchange_rate) -> tuple[float, float]:
@@ -110,6 +142,12 @@ class Transaction:
     exchange_rate: float | None = None
     id: str = ''
     created_at: str = ''
+    # The asset's own currency. None means "this transaction's currency", which
+    # is exact for a single-currency ledger and keeps old callers unchanged.
+    asset_currency: str | None = None
+    # BRL per unit of `asset_currency` on the trade date. Consulted only when
+    # the transaction's currency differs from the asset's.
+    asset_rate: float | None = None
 
     @property
     def sort_key(self) -> tuple:
@@ -135,6 +173,10 @@ class Position:
     withholding_brl: float = 0.0
     fees_brl_total: float = 0.0       # every fee paid, for the cost report
     fees_orig_total: float = 0.0
+    # False once any transaction could not be expressed in the asset's currency
+    # (no close for its trade date). Every *_orig figure is then meaningless and
+    # must be reported as unavailable — never shown as a number.
+    orig_complete: bool = True
 
     @property
     def invested_orig(self) -> float:
@@ -145,11 +187,61 @@ class Position:
         return self.avg_brl * self.quantity
 
 
+def _in_asset_currency(tx: Transaction, amount_orig: float,
+                       amount_brl: float) -> float | None:
+    """
+    Express one amount of `tx` in the asset's currency, or None when the rate
+    that would take it there is missing (Rule 4: absent stays absent).
+    """
+    tx_ccy = (tx.original_currency or BRL).upper()
+    asset_ccy = (tx.asset_currency or tx_ccy).upper()
+    if asset_ccy == tx_ccy:
+        return amount_orig
+    if asset_ccy == BRL:
+        return amount_brl
+    if tx.asset_rate is None or float(tx.asset_rate) <= 0:
+        return None
+    # Through the exact BRL figure, so the two averages can never disagree
+    # about what was paid.
+    return amount_brl / float(tx.asset_rate)
+
+
+def needs_asset_rate(tx: Transaction, asset_currency: str) -> bool:
+    """True when `tx` can only reach `asset_currency` through a market close."""
+    asset_ccy = (asset_currency or BRL).upper()
+    return (asset_ccy != BRL
+            and (tx.original_currency or BRL).upper() != asset_ccy)
+
+
+def with_asset_currency(transactions, asset_currency: str,
+                        closes: dict[date, float]) -> list[Transaction]:
+    """
+    Tag each transaction with the asset's currency and, where needed, the
+    asset currency's close on (or last before) its trade date.
+
+    `closes` maps day → BRL per unit of `asset_currency`. A trade with no close
+    on or before its date is left without a rate, which the engine reports as
+    incomplete instead of converting at a neighbour's rate.
+    """
+    tagged = []
+    for tx in transactions:
+        rate = None
+        if needs_asset_rate(tx, asset_currency):
+            picked = latest_close_on_or_before(closes or {}, tx.transaction_date)
+            rate = picked[1] if picked else None
+        tagged.append(replace(tx, asset_currency=asset_currency, asset_rate=rate))
+    return tagged
+
+
 @dataclass(frozen=True)
 class AuditStep:
     """
     One replay step. Carries before/after on both averages so every number on
     screen can be traced back to the transaction that produced it.
+
+    Every ``*_orig`` amount is in the asset's currency (the transaction's own
+    when no asset currency was given). It is None when that conversion had no
+    rate.
     """
     transaction_date: date
     transaction_type: str
@@ -164,17 +256,17 @@ class AuditStep:
     exchange_rate: float
     original_currency: str
     # Populated for buys
-    cost_orig: float = 0.0
+    cost_orig: float | None = 0.0
     cost_brl: float = 0.0
     # Populated for sells
-    proceeds_orig: float = 0.0
+    proceeds_orig: float | None = 0.0
     proceeds_brl: float = 0.0
     cost_of_sold_orig: float = 0.0
     cost_of_sold_brl: float = 0.0
-    realized_orig: float = 0.0
+    realized_orig: float | None = 0.0
     realized_brl: float = 0.0
     # Populated for dividends / coupons
-    income_orig: float = 0.0
+    income_orig: float | None = 0.0
     income_brl: float = 0.0
     note: str = ''
 
@@ -214,13 +306,17 @@ class WeightedAverage:
         qty = effective_quantity(
             tx.transaction_type, tx.quantity, tx.original_amount)
         # RFB: fees are part of the acquisition cost, added BEFORE conversion.
-        cost_orig = net_amount_original(
+        cost_tx = net_amount_original(
             tx.transaction_type, tx.original_amount, tx.fees_original)
-        cost_brl = cost_orig * rate
+        cost_brl = cost_tx * rate
+        fee_tx = float(tx.fees_original or 0)
+        cost_orig = _in_asset_currency(tx, cost_tx, cost_brl)
+        fee_orig = _in_asset_currency(tx, fee_tx, fee_tx * rate)
+        complete = s.orig_complete and cost_orig is not None
 
         new_qty = s.quantity + qty
         if new_qty > QTY_EPSILON:
-            avg_orig = (s.avg_orig * s.quantity + cost_orig) / new_qty
+            avg_orig = (s.avg_orig * s.quantity + (cost_orig or 0.0)) / new_qty
             avg_brl = (s.avg_brl * s.quantity + cost_brl) / new_qty
         else:
             # Genuinely zero-value, zero-quantity row: nothing to average.
@@ -231,8 +327,9 @@ class WeightedAverage:
             quantity=new_qty,
             avg_orig=avg_orig,
             avg_brl=avg_brl,
-            fees_brl_total=s.fees_brl_total + float(tx.fees_original or 0) * rate,
-            fees_orig_total=s.fees_orig_total + float(tx.fees_original or 0),
+            fees_brl_total=s.fees_brl_total + fee_tx * rate,
+            fees_orig_total=s.fees_orig_total + (fee_orig or 0.0),
+            orig_complete=complete,
         )
         step = AuditStep(
             transaction_date=tx.transaction_date,
@@ -260,16 +357,20 @@ class WeightedAverage:
             )
 
         # Fees reduce the proceeds, mirroring how they raise the cost on a buy.
-        proceeds_orig = net_amount_original(
+        proceeds_tx = net_amount_original(
             tx.transaction_type, tx.original_amount, tx.fees_original)
-        proceeds_brl = proceeds_orig * rate
+        proceeds_brl = proceeds_tx * rate
+        fee_tx = float(tx.fees_original or 0)
+        proceeds_orig = _in_asset_currency(tx, proceeds_tx, proceeds_brl)
+        fee_orig = _in_asset_currency(tx, fee_tx, fee_tx * rate)
 
         # The average AT THIS INSTANT. Because the replay is chronological and
         # the result is locked in here, a later purchase cannot alter this sale.
         cost_sold_orig = s.avg_orig * qty
         cost_sold_brl = s.avg_brl * qty
 
-        gain_orig = proceeds_orig - cost_sold_orig
+        gain_orig = (None if proceeds_orig is None
+                     else proceeds_orig - cost_sold_orig)
         gain_brl = proceeds_brl - cost_sold_brl
 
         new_qty = max(s.quantity - qty, 0.0)
@@ -277,10 +378,11 @@ class WeightedAverage:
             s,
             quantity=new_qty,
             # A sale never moves the averages.
-            realized_orig=s.realized_orig + gain_orig,
+            realized_orig=s.realized_orig + (gain_orig or 0.0),
             realized_brl=s.realized_brl + gain_brl,
-            fees_brl_total=s.fees_brl_total + float(tx.fees_original or 0) * rate,
-            fees_orig_total=s.fees_orig_total + float(tx.fees_original or 0),
+            fees_brl_total=s.fees_brl_total + fee_tx * rate,
+            fees_orig_total=s.fees_orig_total + (fee_orig or 0.0),
+            orig_complete=s.orig_complete and proceeds_orig is not None,
         )
         step = AuditStep(
             transaction_date=tx.transaction_date,
@@ -300,15 +402,18 @@ class WeightedAverage:
     # ── dividend / coupon ────────────────────────────────────────────────────
 
     def _income(self, s: Position, tx: Transaction, rate: float):
-        gross_orig = float(tx.original_amount)
-        withholding_orig = float(tx.withholding_tax_original or 0)
-        net_orig = gross_orig - withholding_orig
+        gross_tx = float(tx.original_amount)
+        withholding_tx = float(tx.withholding_tax_original or 0)
+        net_tx = gross_tx - withholding_tx
+        net_brl = net_tx * rate
+        net_orig = _in_asset_currency(tx, net_tx, net_brl)
 
         new_state = replace(
             s,
-            income_orig=s.income_orig + net_orig,
-            income_brl=s.income_brl + net_orig * rate,
-            withholding_brl=s.withholding_brl + withholding_orig * rate,
+            income_orig=s.income_orig + (net_orig or 0.0),
+            income_brl=s.income_brl + net_brl,
+            withholding_brl=s.withholding_brl + withholding_tx * rate,
+            orig_complete=s.orig_complete and net_orig is not None,
         )
         step = AuditStep(
             transaction_date=tx.transaction_date,
@@ -319,7 +424,7 @@ class WeightedAverage:
             avg_orig_before=s.avg_orig, avg_orig_after=s.avg_orig,
             avg_brl_before=s.avg_brl, avg_brl_after=s.avg_brl,
             exchange_rate=rate, original_currency=tx.original_currency,
-            income_orig=net_orig, income_brl=net_orig * rate,
+            income_orig=net_orig, income_brl=net_brl,
             note='income does not affect quantity or cost basis',
         )
         return new_state, step

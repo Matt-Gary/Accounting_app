@@ -122,3 +122,56 @@ def test_date_before_the_series_returns_none():
 
 def test_empty_series_returns_none():
     assert latest_close_on_or_before({}, date(2026, 8, 12)) is None
+
+
+# ── brl_in_currency: one trade's BRL figure at that trade's own rate ──────────
+
+def test_trade_in_the_target_currency_gives_back_what_was_typed():
+    from service.portfolio.fx import brl_in_currency
+    # $1000 bought at 5.11 → R$ 5110; the USD view must show $1000 exactly.
+    assert brl_in_currency(5110.0, 'USD', 'USD', 5.11, {}, date(2024, 1, 5)) \
+        == pytest.approx(1000.0)
+
+
+def test_trade_in_another_currency_uses_that_days_close():
+    from service.portfolio.fx import brl_in_currency
+    closes = {date(2024, 1, 5): 5.0, date(2024, 1, 8): 6.0}
+    # Sunday the 7th → Friday's 5.0, never Monday's or today's rate.
+    assert brl_in_currency(500.0, 'USD', 'BRL', None, closes,
+                           date(2024, 1, 7)) == pytest.approx(100.0)
+
+
+def test_no_close_means_no_figure():
+    from service.portfolio.fx import brl_in_currency
+    assert brl_in_currency(500.0, 'USD', 'BRL', None, {}, date(2024, 1, 7)) \
+        is None
+
+
+def test_brl_target_is_the_brl_figure():
+    from service.portfolio.fx import brl_in_currency
+    assert brl_in_currency(500.0, 'BRL', 'USD', 5.0, {}, date(2024, 1, 7)) \
+        == 500.0
+
+
+# ── quote_currency_mismatch ──────────────────────────────────────────────────
+
+def test_matching_quote_currency_is_fine():
+    from service.portfolio.fx import quote_currency_mismatch
+    assert quote_currency_mismatch('BTC-USD', 'USD', 'USD') is None
+    assert quote_currency_mismatch('PETR4.SA', 'BRL', 'brl') is None
+
+
+def test_b3_listing_on_a_usd_asset_is_flagged():
+    from service.portfolio.fx import quote_currency_mismatch
+    reason = quote_currency_mismatch('IWDA.SA', 'BRL', 'USD')
+    assert reason is not None and 'BRL' in reason and 'USD' in reason
+
+
+def test_pence_are_not_pounds():
+    from service.portfolio.fx import quote_currency_mismatch
+    assert quote_currency_mismatch('VUSA.L', 'GBp', 'GBP') is not None
+
+
+def test_unknown_quote_currency_is_not_a_mismatch():
+    from service.portfolio.fx import quote_currency_mismatch
+    assert quote_currency_mismatch('XYZ', None, 'USD') is None

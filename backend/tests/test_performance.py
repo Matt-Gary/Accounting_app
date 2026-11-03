@@ -255,3 +255,21 @@ def test_long_history_owes_nothing():
 def test_twr_unlocks_before_xirr():
     """A two-week return is reportable; annualizing it is not."""
     assert TWR_MIN_DAYS < XIRR_MIN_DAYS
+
+
+# ── Portfolio boundary: performance covers the invested categories only ─────
+
+def test_flows_outside_the_categories_are_ignored():
+    """Bank → broker transfer: only the broker-cash deposit crosses the boundary."""
+    rows = [
+        {**tx('2024-01-02', 'withdrawal', 1000.0), 'category': 'cash_bank'},
+        {**tx('2024-01-02', 'deposit', 1000.0), 'category': 'cash_broker'},
+        {**tx('2024-01-03', 'buy', 500.0), 'category': 'bond'},
+    ]
+    flows = external_flows(rows, categories={'cash_broker', 'stock'})
+    assert flows == [(date(2024, 1, 2), 1000.0)]
+
+
+def test_without_categories_every_row_counts():
+    rows = [{**tx('2024-01-02', 'deposit', 100.0), 'category': 'cash_bank'}]
+    assert external_flows(rows) == [(date(2024, 1, 2), 100.0)]

@@ -23,9 +23,8 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
   bool _isLoading = false;
   String _errorMessage = '';
 
-  /// Display currency for all aggregate values. The Avg → Now row on each
-  /// asset card stays in the asset's native currency regardless, so the
-  /// current price always matches the Yahoo quote for that ticker.
+  /// Display currency for every figure on the screen, whatever currency an
+  /// asset is quoted in or a trade was paid in. Shared with the asset screen.
   String _displayCurrency = 'BRL';
 
   /// Closed positions are history, not the working view — collapsed by default.
@@ -78,44 +77,77 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
 
   // ── Formatting ─────────────────────────────────────────────────────────────
 
-  double get _usdRate => _portfolio?.exchangeRateUsdBrl ?? 5.0;
+  /// Today's USD/BRL rate, or 0 when unavailable — `pickAmount` then shows
+  /// BRL rather than converting at an invented rate (this used to be 5.0).
+  double get _usdRate => _portfolio?.exchangeRateUsdBrl ?? 0;
 
   String get _locale => context.locale.toString();
 
-  /// Formats a BRL value in the currently selected display currency.
-  String _money(double brlValue) {
-    final showUsd = _displayCurrency == 'USD';
-    final v = showUsd && _usdRate > 0 ? brlValue / _usdRate : brlValue;
-    return formatMoney(v, showUsd ? 'USD' : 'BRL', _locale);
-  }
-
-  /// Formats a value already expressed in [currency] — no conversion.
-  String _native(double v, String currency) =>
-      formatMoney(v, currency, _locale);
-
-  /// Picks the exact figure for an asset instead of converting a historical
+  /// The representation of a figure to show — and to sign and colour by.
+  /// Picks the backend's exact USD figure instead of converting a historical
   /// BRL amount at today's rate. See `utils/asset_display.dart` — dividing a
   /// past cost by the current rate re-prices history and invents a gain.
-  String _assetMoney(InvestmentAsset a, double brl, double native) {
-    final picked = pickAmount(
-      displayCurrency: _displayCurrency,
-      nativeCurrency: a.nativeCurrency,
-      brl: brl,
-      native: native,
-      usdBrlRate: _usdRate,
-    );
-    final text = formatMoney(picked.value, picked.currency, _locale);
-    // '≈' marks a converted approximation (e.g. an EUR asset viewed in USD,
-    // or a fallback when a rate is missing) so it cannot pass for exact.
-    return picked.exact ? text : '≈ $text';
+  DisplayAmount _pick(double brl, double? usd) => pickAmount(
+        displayCurrency: _displayCurrency,
+        brl: brl,
+        usd: usd,
+        usdBrlRate: _usdRate,
+      );
+
+  /// Formats a figure from its BRL and USD representations in the selected
+  /// currency. [signed] prefixes '+' on non-negative values (P&L).
+  String _money(double brl, double? usd, {bool signed = false}) =>
+      _format(_pick(brl, usd), formatMoney, signed);
+
+  String _format(DisplayAmount a,
+      String Function(double, String, String) format, bool signed) {
+    final text = format(a.value, a.currency, _locale);
+    final withSign = signed && a.value >= 0 ? '+$text' : text;
+    // '≈' marks a converted approximation (the backend lacked a trade-date
+    // close for the USD figure) so it cannot pass for exact.
+    return a.exact ? withSign : '≈ $withSign';
   }
 
-  /// True when this asset's figures are exact in the selected currency.
-  bool _nativeView(InvestmentAsset a) =>
-      isNativeView(_displayCurrency, a.nativeCurrency);
+  /// A percentage for the selected currency. The USD one differs from the BRL
+  /// one by the FX move; without it, the BRL one matches the "≈" fallback.
+  double? _pctFor(double? brlPct, double? usdPct) =>
+      _displayCurrency == 'USD' && usdPct != null ? usdPct : brlPct;
 
-  String _price(double v, String currency) =>
-      formatPrice(v, currency, _locale);
+  // ── Per-asset figures ──────────────────────────────────────────────────────
+  // Totals follow the toggle (BRL/USD); one asset's own figures follow
+  // `assetDisplayCurrency`, so an EUR position stays in euros in the foreign
+  // view instead of being re-expressed in dollars.
+
+  /// The currency [a]'s own figures are shown in right now.
+  String _assetView(InvestmentAsset a) =>
+      assetDisplayCurrency(_displayCurrency, a.nativeCurrency);
+
+  /// True when [a] is shown in its own third currency (EUR, PLN).
+  bool _inOwnCurrency(InvestmentAsset a) =>
+      a.nativeAvailable &&
+      _assetView(a) == a.nativeCurrency &&
+      _assetView(a) != 'BRL' &&
+      _assetView(a) != 'USD';
+
+  DisplayAmount _pickAsset(
+          InvestmentAsset a, double brl, double? usd, double native) =>
+      pickAssetAmount(
+        displayCurrency: _displayCurrency,
+        nativeCurrency: a.nativeCurrency,
+        brl: brl,
+        usd: usd,
+        native: native,
+        nativeAvailable: a.nativeAvailable,
+        usdBrlRate: _usdRate,
+      );
+
+  String _assetMoney(InvestmentAsset a, double brl, double? usd, double native,
+          {bool signed = false}) =>
+      _format(_pickAsset(a, brl, usd, native), formatMoney, signed);
+
+  String _assetPrice(
+          InvestmentAsset a, double brl, double? usd, double native) =>
+      _format(_pickAsset(a, brl, usd, native), formatPrice, false);
 
   String _pct(double v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}%';
 
@@ -144,7 +176,16 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
     final refreshed = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
-        builder: (_) => AssetTransactionsScreen(asset: asset),
+        builder: (_) => AssetTransactionsScreen(
+          asset: asset,
+          // One toggle for the whole module: the asset screen opens in the
+          // currency chosen here, and a flip there carries back.
+          displayCurrency: _displayCurrency,
+          usdBrlRate: _portfolio?.exchangeRateUsdBrl ?? 0,
+          onDisplayCurrencyChanged: (c) {
+            if (mounted) setState(() => _displayCurrency = c);
+          },
+        ),
       ),
     );
     if (refreshed == true) _loadData();
@@ -256,6 +297,12 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
         const SizedBox(height: 12),
         _buildSummaryCard(),
         const SizedBox(height: 12),
+        // Above everything else: a total that silently excludes a position
+        // reads as the portfolio being worth less.
+        if (_portfolio!.unavailableAssets.isNotEmpty) ...[
+          _buildIncompleteBanner(),
+          const SizedBox(height: 12),
+        ],
         if (_portfolio!.hasConcentrationBreaches) ...[
           _buildConcentrationBanner(),
           const SizedBox(height: 12),
@@ -267,7 +314,10 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
         AllocationBars(
           positions: _portfolio!.allocationPositions,
           complete: _portfolio!.allocationComplete,
-          formatValue: _money,
+          // Market values are present-day figures, so today's rate is the
+          // exact one for them (unlike a cost).
+          formatValue: (brl) =>
+              _money(brl, _usdRate > 0 ? brl / _usdRate : null),
         ),
         if (_portfolio!.dividendsTotalNetBrl > 0) ...[
           const SizedBox(height: 12),
@@ -316,7 +366,8 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
       );
     }
-    final pnl = summary.pnlBrl;
+    final pnl = _pick(summary.pnlBrl, summary.pnlUsd).value;
+    final pnlPct = _pctFor(summary.pnlPct, summary.pnlPctUsd);
     return Card(
       margin: const EdgeInsets.only(top: 8, bottom: 8),
       child: Padding(
@@ -348,12 +399,12 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(_money(summary.valueBrl),
+                    Text(_money(summary.valueBrl, summary.valueUsd),
                         style: const TextStyle(
                             fontSize: 18, fontWeight: FontWeight.w700)),
                     Text(
                       '${'investments.summary.invested'.tr()} '
-                      '${_money(summary.investedBrl)}',
+                      '${_money(summary.investedBrl, summary.investedUsd)}',
                       style: const TextStyle(
                           fontSize: 11, color: Colors.grey),
                     ),
@@ -363,14 +414,14 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      '${pnl >= 0 ? '+' : ''}${_money(pnl)}',
+                      _money(summary.pnlBrl, summary.pnlUsd, signed: true),
                       style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
                           color: _pnlColor(pnl)),
                     ),
-                    if (summary.pnlPct != null)
-                      Text(_pct(summary.pnlPct!),
+                    if (pnlPct != null)
+                      Text(_pct(pnlPct),
                           style: TextStyle(
                               fontSize: 11, color: _pnlColor(pnl))),
                   ],
@@ -391,6 +442,52 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
       ),
     );
   }
+
+  /// Positions the totals leave out, each with the backend's reason. Without
+  /// this, an unpriced position simply made the portfolio look smaller.
+  Widget _buildIncompleteBanner() {
+    final missing = _portfolio!.unavailableAssets;
+    final color = Colors.orange.shade800;
+    return Card(
+      color: Colors.orange.shade50,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, size: 18, color: color),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text('investments.incomplete.title'.tr(),
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: color)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            for (final m in missing)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Text(
+                  '• ${m.name}'
+                  '${m.reason != null ? ' — ${m.reason}' : ''}',
+                  style: TextStyle(fontSize: 12, color: color),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// "—" for a figure of a position that could not be valued; its zero is a
+  /// placeholder, not a value.
+  String _orDash(InvestmentAsset a, String Function() figure) =>
+      a.valueAvailable ? figure() : '—';
 
   /// Portfolio-level dividend income, always net of withholding tax.
   Widget _buildDividendsCard() {
@@ -428,9 +525,9 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 stat('investments.dividends.last_12m',
-                    _money(p.dividends12mNetBrl)),
+                    _money(p.dividends12mNetBrl, p.dividends12mNetUsd)),
                 stat('investments.dividends.total',
-                    _money(p.dividendsTotalNetBrl)),
+                    _money(p.dividendsTotalNetBrl, p.dividendsTotalNetUsd)),
                 stat(
                     'investments.dividends.yield_on_cost',
                     p.portfolioYieldOnCostPct == null
@@ -453,7 +550,9 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
     final empties = _portfolio!.emptyAssets;
     if (closed.isEmpty && empties.isEmpty) return [];
 
-    final realized = _portfolio!.closedRealizedBrl;
+    final realizedBrl = _portfolio!.closedRealizedBrl;
+    final realizedUsd = _portfolio!.closedRealizedUsd;
+    final realized = _pick(realizedBrl, realizedUsd).value;
 
     return [
       const SizedBox(height: 8),
@@ -477,7 +576,7 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
               const Spacer(),
               if (closed.isNotEmpty)
                 Text(
-                  '${realized >= 0 ? '+' : ''}${_money(realized)}',
+                  _money(realizedBrl, realizedUsd, signed: true),
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
@@ -496,11 +595,11 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
   }
 
   Widget _buildClosedCard(InvestmentAsset asset) {
-    // Realized gain is historical; it has an exact native figure and must not
-    // be reconstructed from BRL at today's rate.
-    final realized = _nativeView(asset)
-        ? asset.realizedGainsOriginal
-        : asset.realizedGainsBrl;
+    // Realized gain is historical; it has an exact USD figure and must not be
+    // reconstructed from BRL at today's rate.
+    final realized = _pickAsset(asset, asset.realizedGainsBrl,
+            asset.realizedGainsUsd, asset.realizedGainsOriginal)
+        .value;
     final icon = _categoryIcons[asset.category] ?? Icons.folder;
     final from = asset.firstTransactionDate;
     final to = asset.lastTransactionDate;
@@ -531,8 +630,9 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             Text(
-              '${realized >= 0 ? '+' : ''}'
-              '${_assetMoney(asset, asset.realizedGainsBrl, asset.realizedGainsOriginal)}',
+              _assetMoney(asset, asset.realizedGainsBrl,
+                  asset.realizedGainsUsd, asset.realizedGainsOriginal,
+                  signed: true),
               style: TextStyle(
                   fontWeight: FontWeight.bold,
                   fontSize: 14,
@@ -577,8 +677,9 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
         _toggleBtn('USD', '\$ USD'),
         const Spacer(),
         Text(
-          'investments.rate'.tr(
-              namedArgs: {'rate': _usdRate.toStringAsFixed(2)}),
+          'investments.rate'.tr(namedArgs: {
+            'rate': _usdRate > 0 ? _usdRate.toStringAsFixed(2) : '—'
+          }),
           style: const TextStyle(fontSize: 11, color: Colors.grey),
         ),
       ],
@@ -612,7 +713,9 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
 
   Widget _buildSummaryCard() {
     final p = _portfolio!;
-    final isProfit = p.totalPnlBrl >= 0;
+    final pnl = _pick(p.totalPnlBrl, p.totalPnlUsd).value;
+    final isProfit = pnl >= 0;
+    final pnlPct = _pctFor(p.totalPnlPct, p.totalPnlPctUsd) ?? 0.0;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -624,14 +727,15 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
                     fontSize: 13, fontWeight: FontWeight.w500)),
             const SizedBox(height: 8),
             Text(
-              _money(p.totalValueBrl),
+              _money(p.totalValueBrl, p.totalValueUsd),
               style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 4),
             Row(
               children: [
                 Text(
-                    '${'investments.invested_label'.tr()}: ${_money(p.totalInvestedBrl)}',
+                    '${'investments.invested_label'.tr()}: '
+                    '${_money(p.totalInvestedBrl, p.totalInvestedUsd)}',
                     style: const TextStyle(fontSize: 13, color: Colors.grey)),
                 const Spacer(),
                 Container(
@@ -644,11 +748,12 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    '${isProfit ? '+' : ''}${_money(p.totalPnlBrl)}  ${_pct(p.totalPnlPct)}',
+                    '${_money(p.totalPnlBrl, p.totalPnlUsd, signed: true)}'
+                    '  ${_pct(pnlPct)}',
                     style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
-                        color: _pnlColor(p.totalPnlBrl)),
+                        color: _pnlColor(pnl)),
                   ),
                 ),
               ],
@@ -690,7 +795,7 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
             const Spacer(),
             if (catSummary != null)
               Text(
-                _money(catSummary.valueBrl),
+                _money(catSummary.valueBrl, catSummary.valueUsd),
                 style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
@@ -707,18 +812,18 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
   }
 
   /// Stock / crypto: shows the live Yahoo quote against the average purchase
-  /// price, both in the asset's own currency so they are directly comparable.
+  /// price, both in the selected display currency so they are directly
+  /// comparable.
   Widget _buildPricedCard(InvestmentAsset asset) {
-    final cur = asset.nativeCurrency;
-    // In the asset's own currency the P&L is the pure asset move; in BRL it
-    // also carries the FX move. Both are exact — neither is the other divided
-    // by today's rate.
-    final native = _nativeView(asset);
-    final pnl =
-        native ? asset.unrealizedPnlOriginal : asset.unrealizedPnlBrl;
-    final pnlPct =
-        native ? asset.unrealizedPnlPctOriginal : asset.unrealizedPnlPct;
-    final isProfit = pnl >= 0;
+    // Each currency's P&L is its own exact figure: in USD it measures the
+    // gain in dollars, in BRL in reais — neither is the other divided by
+    // today's rate.
+    final pnl = _pickAsset(asset, asset.unrealizedPnlBrl,
+            asset.unrealizedPnlUsd, asset.unrealizedPnlOriginal)
+        .value;
+    final pnlPct = _inOwnCurrency(asset)
+        ? asset.unrealizedPnlPctOriginal
+        : _pctFor(asset.unrealizedPnlPct, asset.unrealizedPnlPctUsd) ?? 0.0;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -758,6 +863,17 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
                           style: TextStyle(
                               fontSize: 12, color: Colors.grey.shade600),
                         ),
+                        // A fresh fetch failed and the last known quote is
+                        // shown: it must say how old it is.
+                        if (asset.priceStale && asset.priceAsOf != null)
+                          Text(
+                            'investments.price_stale'.tr(namedArgs: {
+                              'time': DateFormat('dd.MM HH:mm', _locale)
+                                  .format(asset.priceAsOf!),
+                            }),
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.orange.shade800),
+                          ),
                       ],
                     ),
                   ),
@@ -782,26 +898,51 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
                 ],
               ),
               const SizedBox(height: 12),
-              // Avg → Now → Value, all in the ticker's native currency.
+              // Avg → Now → Value in the selected currency. The average is the
+              // one accumulated at each purchase's own rate (exact in both
+              // currencies), never today's average re-priced; the quote and the
+              // value are present-day figures, so today's rate is right for them.
               Row(
                 children: [
                   Expanded(
                     child: _metric('investments.avg_label'.tr(),
-                        _price(asset.avgCostOriginal, cur)),
+                        _assetPrice(asset, asset.avgCostBrl, asset.avgCostUsd,
+                            asset.avgCostOriginal)),
                   ),
                   const Icon(Icons.arrow_right_alt,
                       size: 18, color: Colors.grey),
                   Expanded(
-                    child: _metric('investments.now_label'.tr(),
-                        _price(asset.currentPrice ?? 0, cur)),
+                    child: _metric(
+                        'investments.now_label'.tr(),
+                        // No converted quote means today's rate is missing — a
+                        // dash, never a zero or a price under the wrong label.
+                        // In its own currency the raw quote needs no rate.
+                        asset.currentPrice == null ||
+                                (asset.currentPriceBrl == null &&
+                                    !_inOwnCurrency(asset))
+                            ? '—'
+                            : _assetPrice(asset, asset.currentPriceBrl ?? 0,
+                                asset.currentPriceUsd, asset.currentPrice!)),
                   ),
                   Expanded(
-                    child: _metric('investments.value_label'.tr(),
-                        _native(asset.currentValueOriginal, cur),
+                    child: _metric(
+                        'investments.value_label'.tr(),
+                        _orDash(
+                            asset,
+                            () => _assetMoney(asset, asset.currentValueBrl,
+                                asset.currentValueUsd,
+                                asset.currentValueOriginal)),
                         alignEnd: true),
                   ),
                 ],
               ),
+              if (!asset.valueAvailable && asset.unavailableReason != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(asset.unavailableReason!,
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.orange.shade800)),
+                ),
               const SizedBox(height: 10),
               Row(
                 children: [
@@ -810,9 +951,10 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
                           TextStyle(fontSize: 12, color: Colors.grey.shade600)),
                   const SizedBox(width: 8),
                   Text(
-                    '${isProfit ? '+' : ''}'
-                    '${native ? _native(pnl, cur) : _money(pnl)}'
-                    ' (${_pct(pnlPct)})',
+                    _orDash(
+                        asset,
+                        () => '${_assetMoney(asset, asset.unrealizedPnlBrl, asset.unrealizedPnlUsd, asset.unrealizedPnlOriginal, signed: true)}'
+                            ' (${_pct(pnlPct)})'),
                     style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -834,16 +976,23 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
   /// balance rather than "invested" and a P&L — asking whether a deposit grew
   /// is the direct result of framing it that way.
   ///
-  /// The FX line appears only when viewing foreign-currency cash in BRL, which
-  /// is the one case where cost and value genuinely differ. In the asset's own
-  /// currency they are the same number: dollars you deposited and still hold
-  /// have not gained anything.
+  /// The FX line appears only when viewing a balance in a currency other than
+  /// its own (USD cash in BRL, BRL cash in USD), which is the one case where
+  /// cost and value genuinely differ. In the asset's own currency they are the
+  /// same number: dollars you deposited and still hold have not gained
+  /// anything.
   Widget _buildFixedCard(InvestmentAsset asset) {
     final icon = _categoryIcons[asset.category] ?? Icons.folder;
-    final showFxLine = !_nativeView(asset) &&
-        asset.nativeCurrency != 'BRL' &&
-        _displayCurrency == 'BRL';
-    final fxMove = asset.currentValueBrl - asset.totalInvestedBrl;
+    final showFxLine = asset.nativeCurrency != _assetView(asset);
+    final fxMoveBrl = asset.currentValueBrl - asset.totalInvestedBrl;
+    final fxMoveUsd =
+        asset.currentValueUsd == null || asset.totalInvestedUsd == null
+            ? null
+            : asset.currentValueUsd! - asset.totalInvestedUsd!;
+    final fxMoveNative =
+        asset.currentValueOriginal - asset.totalInvestedOriginal;
+    final fxMove =
+        _pickAsset(asset, fxMoveBrl, fxMoveUsd, fxMoveNative).value;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -864,10 +1013,11 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
             _categoryLabel(asset.category),
             if (asset.account != null) asset.account!,
             // Cost only means something when it differs from the value, i.e.
-            // when viewing foreign-currency cash in BRL. In its own currency
+            // when viewing a balance in another currency. In its own currency
             // cost and balance are the same number by definition.
             if (showFxLine)
-              '${'investments.cash.cost'.tr()} ${_money(asset.totalInvestedBrl)}',
+              '${'investments.cash.cost'.tr()} '
+                  '${_assetMoney(asset, asset.totalInvestedBrl, asset.totalInvestedUsd, asset.totalInvestedOriginal)}',
           ].join(' · '),
           style: const TextStyle(fontSize: 12, color: Colors.grey),
         ),
@@ -876,13 +1026,15 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             Text(
-              _assetMoney(
-                  asset, asset.currentValueBrl, asset.currentValueOriginal),
+              _orDash(
+                  asset,
+                  () => _assetMoney(asset, asset.currentValueBrl,
+                      asset.currentValueUsd, asset.currentValueOriginal)),
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
             ),
             if (showFxLine)
               Text(
-                '${fxMove >= 0 ? '+' : ''}${_money(fxMove)} '
+                '${_assetMoney(asset, fxMoveBrl, fxMoveUsd, fxMoveNative, signed: true)} '
                 '${'investments.cash.fx_move'.tr()}',
                 style: TextStyle(fontSize: 11, color: _pnlColor(fxMove)),
               )
@@ -991,7 +1143,8 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
     if (pct == null) {
       // _assetMoney already prefixes '≈' when the figure is approximate.
       return Text(
-          _assetMoney(asset, asset.currentValueBrl, asset.currentValueOriginal),
+          _assetMoney(asset, asset.currentValueBrl, asset.currentValueUsd,
+              asset.currentValueOriginal),
           style: TextStyle(fontSize: 11, color: Colors.grey.shade500));
     }
     return Row(
