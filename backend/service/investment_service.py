@@ -25,7 +25,9 @@ from service.portfolio.categories import (
 from service.portfolio.fx import (
     MissingRateError,
     RateTable,
+    brl_in_currency,
     latest_close_on_or_before,
+    quote_currency_mismatch,
     transaction_rate,
 )
 from service.portfolio.settings import DEFAULT_SETTINGS, sanitize_settings
@@ -151,7 +153,24 @@ def get_assets(family_id: str) -> list:
     return res.data or []
 
 
+def _assert_quote_currency(category: str, symbol: str | None,
+                           currency: str | None) -> None:
+    """
+    Refuse a priced asset whose ticker is quoted in another currency than the
+    asset's — its value would be silently wrong. Unreachable Yahoo is not a
+    refusal; the portfolio re-checks at every valuation.
+    """
+    if category not in PRICED_CATEGORIES or not symbol:
+        return
+    reason = quote_currency_mismatch(
+        symbol, quote_currency(symbol), currency or 'BRL')
+    if reason:
+        raise ValueError(reason)
+
+
 def add_asset(family_id: str, data: dict) -> dict:
+    _assert_quote_currency(
+        data['category'], data.get('symbol'), data.get('currency', 'BRL'))
     _invalidate_portfolio_cache(family_id)
     client = get_pg()
     payload = {
@@ -180,6 +199,15 @@ def update_asset(asset_id: str, family_id: str, data: dict) -> dict:
     payload = {k: v for k, v in data.items() if k in allowed}
     if not payload:
         raise ValueError('No editable fields supplied')
+    if {'category', 'symbol', 'currency'} & set(payload):
+        current = (client.from_('investment_assets')
+                   .select('category, symbol, currency')
+                   .eq('id', asset_id)
+                   .eq('family_id', family_id)
+                   .execute()).data or [{}]
+        merged = {**current[0], **payload}
+        _assert_quote_currency(merged.get('category'), merged.get('symbol'),
+                               merged.get('currency'))
     res = (client.from_('investment_assets')
            .update(payload)
            .eq('id', asset_id)
@@ -213,8 +241,43 @@ def get_transactions(family_id: str, asset_id: str = None, year: int = None) -> 
                  .gte('transaction_date', f'{year}-01-01')
                  .lte('transaction_date', f'{year}-12-31'))
     query = query.order('transaction_date', desc=True)
-    res = query.execute()
-    return res.data or []
+    rows = query.execute().data or []
+
+    def asset_ccy(r):
+        return ((r.get('investment_assets') or {}).get('currency')
+                or 'BRL').upper()
+
+    # The list follows the BRL/foreign toggle. `usd_amount` and `asset_amount`
+    # (in the asset's own currency, for EUR/PLN assets) are `brl_amount` at
+    # that trade's own rate: its frozen rate when paid in that currency, else
+    # the day's close. Null when no close exists — never today's rate.
+    closes = _conversion_closes(
+        [('USD', r) for r in rows] + [(asset_ccy(r), r) for r in rows])
+    for r in rows:
+        tx = cb.from_row(r)
+        brl = float(r.get('brl_amount') or 0)
+        r['usd_amount'] = brl_in_currency(
+            brl, 'USD', tx.original_currency, tx.exchange_rate,
+            closes.get('USD'), tx.transaction_date)
+        r['asset_amount'] = brl_in_currency(
+            brl, asset_ccy(r), tx.original_currency, tx.exchange_rate,
+            closes.get(asset_ccy(r)), tx.transaction_date)
+
+    # Which cash account each trade moved money in, so the form can show it on
+    # edit and default to the last one used.
+    try:
+        links = (client.from_('investment_transactions')
+                 .select('linked_transaction_id, asset_id')
+                 .eq('family_id', family_id)
+                 .not_.is_('linked_transaction_id', 'null')
+                 .execute()).data or []
+    except Exception as e:
+        print(f'[WARN] linked cash lookup failed (migration not run?): {e}')
+        links = []
+    cash_by_parent = {l['linked_transaction_id']: l['asset_id'] for l in links}
+    for r in rows:
+        r['cash_asset_id'] = cash_by_parent.get(r.get('id'))
+    return rows
 
 
 def _asset_rows(client, family_id: str, asset_id: str) -> list:
@@ -236,31 +299,148 @@ def _assert_ledger_replayable(rows: list) -> None:
     cb.replay([cb.from_row(r) for r in rows])
 
 
+# ─── Linked cash movements ───────────────────────────────────────────────────
+#
+# A buy / sell / dividend / coupon can name a cash account (`cash_asset_id`):
+# the matching withdrawal or deposit is then written with it, pointing back at
+# the trade through `linked_transaction_id`. Logged by hand it was three rows,
+# and a forgotten withdrawal counted the same money twice — in the portfolio
+# total and in the TWR flows.
+
+_LINKED_ROW_LOCKED = ('This cash movement was created automatically by '
+                      'another transaction — edit or delete that one instead.')
+_REPLAY_LAST = '9999-12-31T00:00:00'  # same-day candidates replay last
+
+
+def _cash_account(client, family_id: str, cash_asset_id: str,
+                  currency: str) -> dict:
+    """The cash account a trade moves money in, validated for this trade."""
+    rows = (client.from_('investment_assets')
+            .select('id, name, category, currency')
+            .eq('id', cash_asset_id)
+            .eq('family_id', family_id)
+            .execute()).data
+    if not rows:
+        raise ValueError('Cash account not found or does not belong to this '
+                         'family')
+    account = rows[0]
+    if account['category'] not in CASH_CATEGORIES:
+        raise ValueError(f"{account['name']} is not a cash account")
+    # The movement is booked in the trade's currency; a cash account in another
+    # currency would store dollars as reais (or the reverse) in its balance.
+    if (account.get('currency') or 'BRL').upper() != (currency or 'BRL').upper():
+        raise ValueError(
+            f"{account['name']} holds {account.get('currency') or 'BRL'}, the "
+            f"transaction is in {currency} — pick a cash account in the same "
+            f"currency.")
+    return account
+
+
+def _linked_cash_payload(parent: dict, label: str) -> dict | None:
+    """The cash row a trade payload implies, or None when it moves no cash."""
+    move = cb.linked_cash_movement(
+        parent['transaction_type'], parent['original_amount'],
+        parent['fees_original'], parent['withholding_tax_original'])
+    if move is None:
+        return None
+    kind, amount = move
+    return _build_transaction_payload({
+        'transaction_type': kind,
+        'transaction_date': parent['transaction_date'],
+        'quantity': 0,
+        'original_currency': parent['original_currency'],
+        'original_amount': amount,
+        # Same frozen rate as the trade: one event, one rate.
+        'exchange_rate': parent['exchange_rate'],
+        'fees_original': 0,
+        'notes': f'Auto: {label}',
+    })
+
+
+def _assert_cash_replayable(rows: list, account: dict) -> None:
+    """Replay a cash ledger; an overdraft reads as what it is."""
+    try:
+        _assert_ledger_replayable(rows)
+    except cb.OversellError as e:
+        raise ValueError(
+            f"Not enough money in {account['name']} for this transaction "
+            f"({e})") from e
+
+
+def _linked_child(client, family_id: str, parent_id: str) -> dict | None:
+    try:
+        rows = (client.from_('investment_transactions')
+                .select('*')
+                .eq('family_id', family_id)
+                .eq('linked_transaction_id', parent_id)
+                .execute()).data or []
+    except Exception as e:
+        # Column missing until linked_cash_transactions.sql is run: there can
+        # be no linked rows yet, and ordinary edits must keep working.
+        print(f'[WARN] linked cash lookup failed (migration not run?): {e}')
+        return None
+    return rows[0] if rows else None
+
+
 def add_transaction(family_id: str, data: dict) -> dict:
     _invalidate_portfolio_cache(family_id)
     client = get_pg()
 
     asset_res = (client.from_('investment_assets')
-                 .select('id, family_id')
+                 .select('id, family_id, name, symbol, category')
                  .eq('id', data['asset_id'])
                  .eq('family_id', family_id)
                  .execute())
     if not asset_res.data:
         raise ValueError('Asset not found or does not belong to this family')
+    asset = asset_res.data[0]
 
     payload = _build_transaction_payload(data)
 
     candidate = {**payload, 'asset_id': data['asset_id'],
                  # Replays last among same-day rows, matching insertion order.
-                 'created_at': '9999-12-31T00:00:00'}
+                 'created_at': _REPLAY_LAST}
     _assert_ledger_replayable(
         _asset_rows(client, family_id, data['asset_id']) + [candidate])
+
+    # Validate the cash side BEFORE writing anything, so a refused overdraft
+    # leaves no half-recorded trade behind.
+    cash_id = data.get('cash_asset_id')
+    child = None
+    if cash_id:
+        if cash_id == data['asset_id'] or asset['category'] in CASH_CATEGORIES:
+            raise ValueError('A cash account cannot fund its own movements')
+        account = _cash_account(client, family_id, cash_id,
+                                payload['original_currency'])
+        child = _linked_cash_payload(
+            payload, f"{payload['transaction_type']} "
+                     f"{asset.get('symbol') or asset.get('name')}")
+        if child:
+            _assert_cash_replayable(
+                _asset_rows(client, family_id, cash_id)
+                + [{**child, 'asset_id': cash_id, 'created_at': _REPLAY_LAST}],
+                account)
 
     payload['asset_id'] = data['asset_id']
     payload['family_id'] = family_id
 
     res = client.from_('investment_transactions').insert(payload).execute()
-    return res.data[0] if res.data else {}
+    created = res.data[0] if res.data else {}
+
+    if child and created.get('id'):
+        try:
+            client.from_('investment_transactions').insert({
+                **child, 'asset_id': cash_id, 'family_id': family_id,
+                'linked_transaction_id': created['id'],
+            }).execute()
+        except Exception:
+            # PostgREST has no multi-statement transaction here: undo the trade
+            # so the ledger never holds a buy whose cash never moved.
+            (client.from_('investment_transactions').delete()
+             .eq('id', created['id']).eq('family_id', family_id).execute())
+            raise
+        created['cash_asset_id'] = cash_id
+    return created
 
 
 def _build_transaction_payload(data: dict) -> dict:
@@ -331,6 +511,8 @@ def update_transaction(tx_id: str, family_id: str, data: dict) -> dict:
                 .execute()).data
     if not existing:
         raise ValueError('Transaction not found or does not belong to this family')
+    if existing[0].get('linked_transaction_id'):
+        raise ValueError(_LINKED_ROW_LOCKED)
 
     editable = {
         'transaction_type', 'transaction_date', 'quantity',
@@ -352,12 +534,58 @@ def update_transaction(tx_id: str, family_id: str, data: dict) -> dict:
     _assert_ledger_replayable(
         [updated_row if r['id'] == existing[0]['id'] else r for r in rows])
 
+    # Keep the linked cash movement in step with the edited trade. A missing
+    # `cash_asset_id` keeps the current account; an explicit null unlinks it.
+    old_child = _linked_child(client, family_id, tx_id)
+    if 'cash_asset_id' in data:
+        target_id = data.get('cash_asset_id') or None
+    else:
+        target_id = old_child['asset_id'] if old_child else None
+    new_child = None
+    if target_id:
+        if target_id == existing[0]['asset_id']:
+            raise ValueError('A cash account cannot fund its own movements')
+        account = _cash_account(client, family_id, target_id,
+                                payload['original_currency'])
+        asset = (client.from_('investment_assets').select('name, symbol')
+                 .eq('id', existing[0]['asset_id']).execute()).data or [{}]
+        new_child = _linked_cash_payload(
+            payload, f"{payload['transaction_type']} "
+                     f"{asset[0].get('symbol') or asset[0].get('name')}")
+    # Replay every cash ledger the edit touches, before writing anything.
+    for cash_id in {old_child['asset_id'] if old_child else None, target_id} - {None}:
+        cash_rows = [r for r in _asset_rows(client, family_id, cash_id)
+                     if not old_child or r['id'] != old_child['id']]
+        if new_child and cash_id == target_id:
+            cash_rows.append({**new_child, 'asset_id': cash_id,
+                              'created_at': (old_child or {}).get('created_at')
+                              or _REPLAY_LAST})
+        account = (client.from_('investment_assets').select('name')
+                   .eq('id', cash_id).execute()).data or [{'name': cash_id}]
+        _assert_cash_replayable(cash_rows, account[0])
+
     res = (client.from_('investment_transactions')
            .update(payload)
            .eq('id', tx_id)
            .eq('family_id', family_id)
            .execute())
-    return res.data[0] if res.data else {}
+
+    if old_child and new_child and old_child['asset_id'] == target_id:
+        (client.from_('investment_transactions').update(new_child)
+         .eq('id', old_child['id']).eq('family_id', family_id).execute())
+    else:
+        if old_child:
+            (client.from_('investment_transactions').delete()
+             .eq('id', old_child['id']).eq('family_id', family_id).execute())
+        if new_child:
+            client.from_('investment_transactions').insert({
+                **new_child, 'asset_id': target_id, 'family_id': family_id,
+                'linked_transaction_id': tx_id,
+            }).execute()
+
+    updated = res.data[0] if res.data else {}
+    updated['cash_asset_id'] = target_id if new_child else None
+    return updated
 
 
 def delete_transaction(tx_id: str, family_id: str) -> dict:
@@ -365,16 +593,30 @@ def delete_transaction(tx_id: str, family_id: str) -> dict:
     client = get_pg()
 
     existing = (client.from_('investment_transactions')
-                .select('id, asset_id')
+                .select('*')
                 .eq('id', tx_id)
                 .eq('family_id', family_id)
                 .execute()).data
     if existing:
+        if existing[0].get('linked_transaction_id'):
+            raise ValueError(_LINKED_ROW_LOCKED)
         # Removing a buy that funds a later sell would leave an unreplayable
         # ledger behind — reject with a readable error instead.
         rows = _asset_rows(client, family_id, existing[0]['asset_id'])
         _assert_ledger_replayable(
             [r for r in rows if r['id'] != existing[0]['id']])
+        # Its cash movement goes with it; the cash ledger must survive that
+        # (deleting a sale whose proceeds were already spent would overdraw).
+        child = _linked_child(client, family_id, tx_id)
+        if child:
+            account = (client.from_('investment_assets').select('name')
+                       .eq('id', child['asset_id']).execute()).data or [{}]
+            _assert_cash_replayable(
+                [r for r in _asset_rows(client, family_id, child['asset_id'])
+                 if r['id'] != child['id']],
+                {'name': account[0].get('name', child['asset_id'])})
+            (client.from_('investment_transactions').delete()
+             .eq('id', child['id']).eq('family_id', family_id).execute())
 
     (client.from_('investment_transactions')
      .delete()
@@ -386,7 +628,8 @@ def delete_transaction(tx_id: str, family_id: str) -> dict:
 
 # ─── Core position engine: preço médio (weighted average cost) ───────────────
 
-def _compute_position(transactions: list) -> dict:
+def _compute_position(transactions: list, asset_currency: str | None = None,
+                      asset_closes: dict | None = None) -> dict:
     """
     Adapter over the shared cost-basis engine.
 
@@ -394,31 +637,83 @@ def _compute_position(transactions: list) -> dict:
     adds the native-currency realized figure, total fees, and the audit trail.
     The trail comes from the same walk that produced the totals, so the two can
     never disagree.
+
+    With `asset_currency`, every *_original figure is in that currency even
+    when some transactions were paid in another; `asset_closes` (day → BRL per
+    unit of it) supplies the trade-date rates. A missing close nulls the native
+    figures instead of approximating them.
     """
-    state, trail = cb.replay([cb.from_row(t) for t in transactions])
+    txs = [cb.from_row(t) for t in transactions]
+    if asset_currency:
+        txs = cb.with_asset_currency(txs, asset_currency, asset_closes or {})
+    state, trail = cb.replay(txs)
+    native = state.orig_complete
     return {
         'quantity': state.quantity,
         'avg_cost_brl': state.avg_brl,
         'total_invested_brl': state.invested_brl,
         'realized_gains_brl': state.realized_brl,
         'dividends_brl': state.income_brl,
-        'avg_cost_original': state.avg_orig,
-        'total_invested_original': state.invested_orig,
-        'realized_gains_original': state.realized_orig,
-        'dividends_original': state.income_orig,
+        'native_available': native,
+        'avg_cost_original': state.avg_orig if native else None,
+        'total_invested_original': state.invested_orig if native else None,
+        'realized_gains_original': state.realized_orig if native else None,
+        'dividends_original': state.income_orig if native else None,
         'withholding_brl': state.withholding_brl,
         'fees_brl_total': state.fees_brl_total,
-        'fees_orig_total': state.fees_orig_total,
+        'fees_orig_total': state.fees_orig_total if native else None,
         'audit_trail': trail,
     }
 
 
+def _conversion_closes(pairs) -> dict:
+    """
+    Daily closes for every target currency that some transaction was NOT paid
+    in, keyed by currency. `pairs` yields (target_currency, transaction row).
+    Fetched only when such a transaction exists, so a single-currency ledger
+    costs no extra Yahoo round-trip.
+    """
+    earliest: dict = {}
+    for ccy, row in pairs:
+        ccy = (ccy or 'BRL').upper()
+        tx = cb.from_row(row)
+        if cb.needs_asset_rate(tx, ccy):
+            d = tx.transaction_date
+            earliest[ccy] = min(earliest.get(ccy, d), d)
+    # A week of lead-in so a trade on a weekend or holiday finds the previous
+    # close inside the fetched window.
+    return {ccy: get_fx_closes(ccy, start - timedelta(days=7), date.today())
+            for ccy, start in earliest.items()}
+
+
+def _asset_currency_closes(assets: list, txns_by_asset: dict) -> dict:
+    """Closes taking each asset's off-currency trades into its own currency."""
+    return _conversion_closes(
+        (asset.get('currency'), row)
+        for asset in assets
+        for row in txns_by_asset.get(asset['id'], []))
+
+
+def _sum_or_none(values) -> float | None:
+    """Sum, or None when any term is missing — a partial sum reads as whole."""
+    total = 0.0
+    for v in values:
+        if v is None:
+            return None
+        total += v
+    return total
+
+
 # ─── Yahoo Finance price fetcher (reused from original service) ───────────────
 
-def _fetch_one(ticker) -> tuple[float, float]:
-    """Pull last price and previous close for a single ticker."""
+def _fetch_one(ticker) -> tuple[float, float, str | None]:
+    """
+    Pull last price, previous close and the quote currency for one ticker.
+    The currency is None when Yahoo does not say — never assumed.
+    """
     price = 0.0
     prev_close = 0.0
+    currency = None
     # Read fast_info once — each access can trigger its own lazy lookup.
     info = getattr(ticker, 'fast_info', None)
     if info is not None:
@@ -430,6 +725,10 @@ def _fetch_one(ticker) -> tuple[float, float]:
             prev_close = info['previous_close']
         except Exception:
             pass
+        try:
+            currency = info['currency'] or None
+        except Exception:
+            pass
     if price == 0.0 or prev_close == 0.0:
         hist = ticker.history(period='2d')
         if not hist.empty:
@@ -437,7 +736,23 @@ def _fetch_one(ticker) -> tuple[float, float]:
                 price = hist['Close'].iloc[-1]
             if prev_close == 0.0 and len(hist) >= 2:
                 prev_close = hist['Close'].iloc[-2]
-    return float(price), float(prev_close)
+    return float(price), float(prev_close), currency
+
+
+def quote_currency(symbol: str) -> str | None:
+    """
+    The currency `symbol` is quoted in, for validating an asset on save.
+    Served from the price cache when known; None when Yahoo cannot be reached
+    (an unverifiable symbol is saved — valuation re-checks it every load).
+    """
+    entry = _price_cache.get(symbol)
+    if entry and entry.get('currency'):
+        return entry['currency']
+    try:
+        return yf.Ticker(symbol).fast_info['currency'] or None
+    except Exception as e:
+        print(f'[WARN] quote currency lookup failed for {symbol}: {e}')
+        return None
 
 
 def _fetch_prices(symbols: list, force_refresh: bool = False) -> tuple[dict, dict, RateTable, dict]:
@@ -476,19 +791,20 @@ def _fetch_prices(symbols: list, force_refresh: bool = False) -> tuple[dict, dic
                     return sym, _fetch_one(data.tickers[sym])
                 except Exception as e:
                     print(f'[WARN] Price fetch error for {sym}: {e}')
-                    return sym, (0.0, 0.0)
+                    return sym, (0.0, 0.0, None)
 
             with ThreadPoolExecutor(max_workers=8) as pool:
                 results = list(pool.map(worker, stale))
         except Exception as e:
             print(f'[ERROR] Batch price fetch failed: {e}')
-            results = [(sym, (0.0, 0.0)) for sym in stale]
+            results = [(sym, (0.0, 0.0, None)) for sym in stale]
 
-        for sym, (price, prev_close) in results:
+        for sym, (price, prev_close, quote_ccy) in results:
             if price > 0:
                 prices[sym] = price
                 prev_closes[sym] = prev_close
-                _price_cache[sym] = {'price': price, 'prev': prev_close, 'ts': time.time()}
+                _price_cache[sym] = {'price': price, 'prev': prev_close,
+                                     'currency': quote_ccy, 'ts': time.time()}
                 continue
             # Fetch produced nothing. Keep the last known value rather than
             # zeroing the position out, and leave its cache entry untouched so
@@ -536,6 +852,7 @@ def _fetch_prices(symbols: list, force_refresh: bool = False) -> tuple[dict, dic
             'as_of': ts,
             'stale': bool(ts is not None and (now_ts - ts) > _PRICE_CACHE_TTL),
             'available': bool(prices.get(sym, 0) > 0),
+            'currency': entry.get('currency') if entry else None,
         }
 
     return prices, prev_closes, rates, meta
@@ -568,7 +885,30 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
     for tx in all_txns:
         txns_by_asset[tx['asset_id']].append(tx)
 
-    positions = {a['id']: _compute_position(txns_by_asset.get(a['id'], [])) for a in assets}
+    # The USD/BRL series over the whole ledger also covers every USD asset's
+    # own off-currency trades, so it is fetched once and shared.
+    usd_closes = _conversion_closes(
+        ('USD', row) for row in all_txns).get('USD')
+    asset_closes = _asset_currency_closes(
+        [a for a in assets if (a.get('currency') or 'BRL').upper() != 'USD'],
+        txns_by_asset)
+    asset_closes['USD'] = usd_closes
+    positions = {
+        a['id']: _compute_position(
+            txns_by_asset.get(a['id'], []),
+            asset_currency=a.get('currency') or 'BRL',
+            asset_closes=asset_closes.get((a.get('currency') or 'BRL').upper()))
+        for a in assets
+    }
+    # The same ledgers replayed into USD, so the USD view of every asset is
+    # exact whatever currency each trade was paid in: cost at each trade's own
+    # USD/BRL close, never today's rate (which would invent an FX gain).
+    usd_positions = {
+        a['id']: _compute_position(txns_by_asset.get(a['id'], []),
+                                   asset_currency='USD',
+                                   asset_closes=usd_closes)
+        for a in assets
+    }
 
     symbols = [a['symbol'] for a in assets if a['category'] in PRICED_CATEGORIES and a.get('symbol')]
     prices, prev_closes, rates, price_meta = _fetch_prices(symbols, force_refresh)
@@ -578,9 +918,16 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
     total_invested_brl = 0.0
     enriched_assets = []
     unavailable = []
+    usd_rate = rates.usd_brl
+    today = date.today()
+
+    def present_usd(brl):
+        # Present-day values only: today's rate is the right one for them.
+        return None if brl is None or not usd_rate else brl / usd_rate
 
     for asset in assets:
         pos = positions[asset['id']]
+        upos = usd_positions[asset['id']]
         qty = pos['quantity']
         cat = asset['category']
         native_currency = asset.get('currency', 'BRL')
@@ -590,9 +937,22 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
         reason = None
         sym = asset.get('symbol')
 
-        if cat in PRICED_CATEGORIES and sym:
+        if cat in PRICED_CATEGORIES and sym and qty <= cb.QTY_EPSILON:
+            # Nothing held, nothing to value. A sold-out position whose ticker
+            # was delisted or mismatched must not mark the totals incomplete —
+            # that would also block every future snapshot.
+            val_native = 0.0
+        elif cat in PRICED_CATEGORIES and sym:
             quote = prices.get(sym, 0.0)
-            if quote > 0:
+            mismatch = quote_currency_mismatch(
+                sym, price_meta.get(sym, {}).get('currency'), native_currency)
+            if mismatch:
+                # A quote in another unit than the asset's would value it
+                # silently wrong (IWDA.SA in BRL read as USD: ~5x). Excluded
+                # and explained, like an unpriced position.
+                val_native = None
+                reason = mismatch
+            elif quote > 0:
                 current_price = quote
                 val_native = qty * quote
                 prev_close = prev_closes.get(sym, 0.0)
@@ -642,7 +1002,17 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
         trail = pos['audit_trail']
         is_closed = bool(trail) and qty <= cb.QTY_EPSILON
 
-        dividends_12m = dv.trailing_income_brl(trail, date.today())
+        dividends_12m = dv.trailing_income_brl(trail, today)
+
+        current_price_brl = (None if current_price is None
+                             else rates.to_brl(current_price, native_currency))
+        # USD side: costs from the USD replay (None when a trade-date close is
+        # missing), present values at today's rate.
+        usd_ok = upos['native_available']
+        invested_usd = upos['total_invested_original']
+        value_usd = present_usd(val_brl)
+        pnl_usd = (None if value_usd is None or invested_usd is None
+                   else value_usd - invested_usd)
 
         meta = price_meta.get(sym, {}) if sym else {}
         enriched = {
@@ -666,13 +1036,36 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
             'fees_brl_total': pos['fees_brl_total'],
             'fees_original_total': pos['fees_orig_total'],
             'current_price': current_price,
+            # Today's quote at today's rate — a present value, so converting
+            # it is exact (unlike a historical cost). None when unconvertible.
+            'current_price_brl': current_price_brl,
             'daily_change_pct': daily_change_pct,
+            # USD view, whatever currency each trade was paid in. Costs are at
+            # each trade's own USD/BRL close; null means a close was missing,
+            # never an approximation.
+            'avg_cost_usd': upos['avg_cost_original'],
+            'total_invested_usd': invested_usd,
+            'realized_gains_usd': upos['realized_gains_original'],
+            'dividends_usd': upos['dividends_original'],
+            'dividends_12m_usd': (
+                dv.trailing_income(upos['audit_trail'], today,
+                                   attr='income_orig') if usd_ok else None),
+            'current_price_usd': present_usd(current_price_brl),
+            'current_value_usd': value_usd,
+            'unrealized_pnl_usd': pnl_usd,
+            'unrealized_pnl_pct_usd': (
+                pnl_usd / invested_usd * 100
+                if pnl_usd is not None and invested_usd > 0 else
+                (0.0 if pnl_usd is not None else None)),
             'current_value_brl': val_brl,
             'unrealized_pnl_brl': unrealized_pnl_brl,
             'unrealized_pnl_pct': unrealized_pnl_pct,
             # Native-currency view, so the UI can show avg cost against the
             # Yahoo quote in the ticker's own units.
             'native_currency': native_currency,
+            # False when a transaction in another currency had no trade-date
+            # close: the *_original figures are then null, not approximated.
+            'native_available': pos['native_available'],
             'avg_cost_original': pos['avg_cost_original'],
             'total_invested_original': pos['total_invested_original'],
             'current_value_original': val_native,
@@ -694,6 +1087,22 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
 
     total_pnl_brl = total_value_brl - total_invested_brl
     total_pnl_pct = (total_pnl_brl / total_invested_brl * 100) if total_invested_brl > 0 else 0.0
+
+    # USD totals. Value follows the BRL exclusions (same assets, today's rate);
+    # invested is the sum of each asset's own USD cost, so it is None if any
+    # one of them is missing.
+    total_value_usd = present_usd(total_value_brl)
+    total_invested_usd = _sum_or_none(
+        a['total_invested_usd'] for a in enriched_assets)
+    total_pnl_usd = (None if total_value_usd is None or total_invested_usd is None
+                     else total_value_usd - total_invested_usd)
+    for cat, entry in category_totals.items():
+        entry['value_usd'] = present_usd(entry['value_brl'])
+        entry['invested_usd'] = _sum_or_none(
+            a['total_invested_usd'] for a in enriched_assets
+            if a['category'] == cat)
+    dividends_12m_usd = _sum_or_none(
+        a['dividends_12m_usd'] for a in enriched_assets)
 
     # Second pass: a position's share can only be known once every position has
     # been valued.
@@ -718,6 +1127,13 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
         'total_invested_brl': total_invested_brl,
         'total_pnl_brl': total_pnl_brl,
         'total_pnl_pct': total_pnl_pct,
+        'total_value_usd': total_value_usd,
+        'total_invested_usd': total_invested_usd,
+        'total_pnl_usd': total_pnl_usd,
+        'total_pnl_pct_usd': (
+            total_pnl_usd / total_invested_usd * 100
+            if total_pnl_usd is not None and total_invested_usd > 0 else
+            (0.0 if total_pnl_usd is not None else None)),
         'exchange_rate_usd_brl': rates.usd_brl,
         'rates_as_of': rates.as_of,
         'by_category': category_totals,
@@ -759,6 +1175,9 @@ def get_portfolio_summary(family_id: str, force_refresh: bool = False) -> dict:
             'portfolio_yield_on_cost_pct': dv.yield_on_cost_pct(
                 sum(a['dividends_12m_brl'] for a in enriched_assets),
                 total_invested_brl),
+            'total_net_usd': _sum_or_none(
+                p['dividends_original'] for p in usd_positions.values()),
+            'last_12m_net_usd': dividends_12m_usd,
         },
     }
 
@@ -824,7 +1243,7 @@ USD_BRL_SYMBOL = 'BRL=X'
 
 _benchmark_cache: dict = {}
 _BENCHMARK_CACHE_TTL = 3600
-_usd_brl_series_cache: dict = {}
+_fx_series_cache: dict = {}
 
 
 def get_benchmark_closes(start: date, end: date) -> dict:
@@ -851,21 +1270,31 @@ def get_benchmark_closes(start: date, end: date) -> dict:
 
 
 def get_usd_brl_closes(start: date, end: date) -> dict:
+    """Daily USD/BRL closes for [start, end] — see `get_fx_closes`."""
+    return get_fx_closes('USD', start, end)
+
+
+def get_fx_closes(currency: str, start: date, end: date) -> dict:
     """
-    Daily USD/BRL closes for [start, end], cached for an hour.
+    Daily `currency`/BRL closes for [start, end], cached for an hour.
 
     Same shape and failure policy as `get_benchmark_closes`: a fetch failure
     returns an empty map and is NOT cached, so the next call retries instead of
-    freezing an outage into the hour.
+    freezing an outage into the hour. An unsupported currency is an empty map
+    too — never a 1:1 stand-in.
     """
-    key = (start.isoformat(), end.isoformat())
+    c = (currency or 'BRL').upper()
+    symbol = _FX_HISTORY_TICKERS.get(c)
+    if not symbol:
+        return {}
+    key = (c, start.isoformat(), end.isoformat())
     now = time.time()
-    cached = _usd_brl_series_cache.get(key)
+    cached = _fx_series_cache.get(key)
     if cached and (now - cached['ts']) < _BENCHMARK_CACHE_TTL:
         return cached['data']
     closes: dict = {}
     try:
-        raw = yf.Ticker(USD_BRL_SYMBOL).history(
+        raw = yf.Ticker(symbol).history(
             start=start.isoformat(),
             end=(end + timedelta(days=1)).isoformat())
         for idx, row in raw.iterrows():
@@ -873,9 +1302,9 @@ def get_usd_brl_closes(start: date, end: date) -> dict:
             if close > 0:
                 closes[idx.date()] = close
     except Exception as e:
-        print(f'[WARN] USD/BRL series fetch failed: {e}')
+        print(f'[WARN] {c}/BRL series fetch failed: {e}')
     if closes:
-        _usd_brl_series_cache[key] = {'data': closes, 'ts': now}
+        _fx_series_cache[key] = {'data': closes, 'ts': now}
     return closes
 
 
@@ -896,15 +1325,25 @@ def get_performance(family_id: str, range_key: str,
             f'Allowed: {sorted(PERFORMANCE_CURRENCIES)}')
 
     client = get_pg()
+    # Performance measures the invested portfolio only — the allocation base
+    # (stocks, ETFs, crypto, cash equivalents, broker cash). Bonds valued at
+    # cost (Tesouro), bank and home cash are reserves: folding idle money into
+    # a return compared against the S&P 500 makes the invested part look worse
+    # than it works.
     query = (client.from_('portfolio_snapshots')
-             .select('snapshot_date, total_value_brl')
+             .select('snapshot_date, allocation_base_brl')
              .eq('family_id', family_id)
              .order('snapshot_date', desc=False))
     days = PERFORMANCE_RANGES[range_key]
     if days is not None:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         query = query.gte('snapshot_date', cutoff)
-    rows = query.execute().data or []
+    rows = [r for r in (query.execute().data or [])
+            if r.get('allocation_base_brl') is not None]
+    # Days before anything was invested have no base to grow from; a leading
+    # zero would make the first subperiod's return undefined.
+    while rows and float(rows[0]['allocation_base_brl']) <= 0:
+        rows.pop(0)
 
     # Observed span, first snapshot to last — the only history the figures can
     # honestly rest on. A lone snapshot spans no time, so the wait stays full.
@@ -926,7 +1365,7 @@ def get_performance(family_id: str, range_key: str,
 
     valuations = [
         (date.fromisoformat(r['snapshot_date'][:10]),
-         float(r['total_value_brl']))
+         float(r['allocation_base_brl']))
         for r in rows
     ]
     first_date, first_value = valuations[0]
@@ -935,16 +1374,22 @@ def get_performance(family_id: str, range_key: str,
     txns = (client.from_('investment_transactions')
             .select('transaction_date, transaction_type, brl_amount,'
                     ' original_currency, exchange_rate,'
-                    ' withholding_tax_original')
+                    ' withholding_tax_original, investment_assets(category)')
             .eq('family_id', family_id)
             .execute()).data or []
-    # Flows before the first snapshot are already embodied in its value.
+    for t in txns:
+        t['category'] = (t.get('investment_assets') or {}).get('category')
+    # Flows before the first snapshot are already embodied in its value. Only
+    # flows across the invested boundary count: bank → broker cash is new
+    # money in, the bank side is outside the measured portfolio.
     window_flows = [
-        (d, f) for d, f in perf.external_flows(txns)
+        (d, f) for d, f in perf.external_flows(txns, ALLOCATION_CATEGORIES)
         if first_date < d <= last_date
     ]
 
-    currency_warnings: list = []
+    currency_warnings: list = [
+        'Covers the invested portfolio only (stocks, ETFs, crypto, cash '
+        'equivalents, broker cash); bonds, bank and home cash are excluded.']
     if currency == 'USD':
         # Every date is converted at ITS OWN close, never at today's rate: a
         # single rate applied across the window would smuggle FX movement into

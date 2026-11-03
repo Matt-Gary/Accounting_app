@@ -5,6 +5,7 @@ The five cases the specification requires are marked REQUIRED. Everything here
 runs against pure functions: no database, no network, no fixtures.
 """
 
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -15,6 +16,7 @@ from service.portfolio.cost_basis import (
     Transaction,
     WeightedAverage,
     replay,
+    with_asset_currency,
 )
 from service.portfolio.fx import MissingRateError
 
@@ -340,3 +342,122 @@ def test_empty_ledger_is_a_zero_position():
     state, trail = replay([])
     assert state == Position()
     assert trail == []
+
+
+# ── Mixed-currency ledger: the native average stays in the asset's currency ──
+#
+# A USD asset (BTC-USD) bought once in USD and once in BRL. Summing the BRL
+# amount into the USD average is what produced a "USD" average of ~182 000.
+
+def _in_asset(tx, asset_currency, asset_rate=None):
+    return replace(tx, asset_currency=asset_currency, asset_rate=asset_rate)
+
+
+def test_buy_in_brl_is_converted_into_the_asset_currency():
+    state, trail = replay([
+        _in_asset(buy(10, 1, 100_000.0, 5.00), 'USD'),
+        # 1 BTC paid R$ 550 000 when USD/BRL closed at 5.50 → $100 000.
+        _in_asset(buy(20, 1, 550_000.0, None, currency='BRL'), 'USD', 5.50),
+    ])
+    assert state.avg_orig == pytest.approx(100_000.0, abs=1e-6)
+    assert state.avg_brl == pytest.approx((500_000.0 + 550_000.0) / 2, abs=1e-6)
+    assert state.orig_complete is True
+    assert trail[1].cost_orig == pytest.approx(100_000.0, abs=1e-6)
+
+
+def test_fees_in_a_foreign_transaction_currency_are_converted_too():
+    state, _ = replay([
+        _in_asset(buy(10, 1, 550.0, None, fee=11.0, currency='BRL'), 'USD', 5.50),
+    ])
+    assert state.avg_orig == pytest.approx(102.0, abs=1e-9)    # (550+11)/5.5
+    assert state.fees_orig_total == pytest.approx(2.0, abs=1e-9)
+
+
+def test_sell_in_brl_realizes_the_gain_in_the_asset_currency():
+    state, trail = replay([
+        _in_asset(buy(10, 2, 200.0, 5.00), 'USD'),               # avg $100
+        _in_asset(sell(20, 1, 660.0, None, currency='BRL'), 'USD', 6.00),
+    ])
+    # R$ 660 at 6.00 = $110 → $10 gain, not R$ 660 − $100.
+    assert trail[1].proceeds_orig == pytest.approx(110.0, abs=1e-9)
+    assert state.realized_orig == pytest.approx(10.0, abs=1e-9)
+    assert state.realized_brl == pytest.approx(660.0 - 500.0, abs=1e-9)
+
+
+def test_income_in_another_currency_is_converted():
+    tx = Transaction(transaction_date=date(2024, 1, 5),
+                     transaction_type='dividend', original_amount=55.0,
+                     original_currency='BRL', id='div')
+    state, _ = replay([
+        _in_asset(buy(1, 1, 100.0, 5.00), 'USD'),
+        _in_asset(tx, 'USD', 5.50),
+    ])
+    assert state.income_orig == pytest.approx(10.0, abs=1e-9)
+    assert state.income_brl == pytest.approx(55.0, abs=1e-9)
+
+
+def test_brl_asset_takes_the_brl_figure_of_a_foreign_transaction():
+    state, _ = replay([_in_asset(buy(1, 10, 100.0, 5.00), 'BRL')])
+    assert state.avg_orig == pytest.approx(50.0, abs=1e-9)
+    assert state.orig_complete is True
+
+
+def test_missing_asset_rate_marks_native_figures_incomplete_not_guessed():
+    """Rule 4: no close for the trade date means no native average at all."""
+    state, _ = replay([
+        _in_asset(buy(10, 1, 100_000.0, 5.00), 'USD'),
+        _in_asset(buy(20, 1, 550_000.0, None, currency='BRL'), 'USD', None),
+    ])
+    assert state.orig_complete is False
+    # The BRL side never needed that rate and stays exact.
+    assert state.avg_brl == pytest.approx(525_000.0, abs=1e-6)
+
+
+def test_without_an_asset_currency_each_transaction_is_its_own_unit():
+    """Callers that do not pass the asset currency keep the old behaviour."""
+    state, _ = replay([buy(10, 10, 1000.0, 5.00)])
+    assert state.avg_orig == pytest.approx(100.0, abs=APPROX)
+    assert state.orig_complete is True
+
+
+def test_with_asset_currency_attaches_the_trade_date_close():
+    closes = {date(2024, 1, 19): 5.40, date(2024, 1, 22): 5.60}
+    txs = with_asset_currency([
+        buy(10, 1, 100.0, 5.00),                                  # USD: no rate
+        buy(21, 1, 540.0, None, currency='BRL'),                  # Sunday
+    ], 'USD', closes)
+    assert txs[0].asset_rate is None
+    # A Sunday trade takes Friday's close, never Monday's.
+    assert txs[1].asset_rate == pytest.approx(5.40)
+    assert all(t.asset_currency == 'USD' for t in txs)
+
+
+def test_with_asset_currency_leaves_the_rate_absent_without_a_close():
+    txs = with_asset_currency(
+        [buy(10, 1, 540.0, None, currency='BRL')], 'USD', {})
+    assert txs[0].asset_rate is None
+
+
+# ── Linked cash movements ───────────────────────────────────────────────────
+
+def test_buy_takes_amount_plus_fee_out_of_cash():
+    from service.portfolio.cost_basis import linked_cash_movement
+    assert linked_cash_movement('buy', 1000.0, 5.0, 0) == ('withdrawal', 1005.0)
+
+
+def test_sell_puts_amount_minus_fee_into_cash():
+    from service.portfolio.cost_basis import linked_cash_movement
+    assert linked_cash_movement('sell', 1000.0, 5.0, 0) == ('deposit', 995.0)
+
+
+def test_income_puts_the_net_into_cash():
+    from service.portfolio.cost_basis import linked_cash_movement
+    assert linked_cash_movement('dividend', 100.0, 0, 15.0) == ('deposit', 85.0)
+    assert linked_cash_movement('coupon', 100.0, 0, 0) == ('deposit', 100.0)
+
+
+def test_cash_movements_and_empty_income_move_nothing():
+    from service.portfolio.cost_basis import linked_cash_movement
+    assert linked_cash_movement('deposit', 100.0, 0, 0) is None
+    assert linked_cash_movement('withdrawal', 100.0, 0, 0) is None
+    assert linked_cash_movement('dividend', 100.0, 0, 100.0) is None

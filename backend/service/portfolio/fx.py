@@ -37,6 +37,47 @@ def latest_close_on_or_before(closes: dict[date, float],
     return best, closes[best]
 
 
+def brl_in_currency(brl_amount: float, currency: str, tx_currency: str,
+                    tx_rate, closes: dict[date, float],
+                    on: date) -> float | None:
+    """
+    One trade's BRL figure expressed in `currency` at THAT trade's rate.
+
+    A trade made in `currency` divides by its own frozen rate, which gives back
+    exactly what was typed. Any other trade uses the `currency`/BRL close on
+    (or last before) its date. No close → None, never today's rate: dividing a
+    past amount by the current rate re-prices history.
+    """
+    c = (currency or BRL).upper()
+    if c == BRL:
+        return brl_amount
+    if (tx_currency or BRL).upper() == c and tx_rate and float(tx_rate) > 0:
+        return brl_amount / float(tx_rate)
+    picked = latest_close_on_or_before(closes or {}, on)
+    return None if picked is None else brl_amount / picked[1]
+
+
+def quote_currency_mismatch(symbol: str, quote_currency: str | None,
+                            asset_currency: str) -> str | None:
+    """
+    Why a ticker's quote cannot value an asset, or None when it can.
+
+    The quote is read as being in the asset's currency, so a mismatch values
+    the position in the wrong unit without any error: IWDA.SA (BRL) on a USD
+    asset is ~5x too high, an EUR line ~8% off. An unknown quote currency is
+    not evidence of a mismatch — the check is skipped rather than guessed.
+    """
+    if not quote_currency:
+        return None
+    # Case matters only for minor units (GBp = pence); comparing upper-cased
+    # would wrongly accept GBp against GBP.
+    if quote_currency == (asset_currency or BRL).upper():
+        return None
+    return (f'{symbol} is quoted in {quote_currency}, but the asset is set to '
+            f'{(asset_currency or BRL).upper()}. Change the symbol or the '
+            f'asset currency.')
+
+
 class MissingRateError(ValueError):
     """Raised when a rate required for a tax figure is absent or unusable."""
 

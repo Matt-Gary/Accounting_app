@@ -58,6 +58,50 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   bool get _isIncomeType =>
       _transactionType == 'dividend' || _transactionType == 'coupon';
 
+  // ── Linked cash account ──────────────────────────────────────────────────
+  // A buy takes money out of a cash account, a sell or income puts it in; the
+  // backend writes that movement with the trade. Logged by hand it was easy to
+  // forget, and a forgotten withdrawal counted the same money twice.
+
+  static const _cashCategories = {'cash_broker', 'cash_home', 'cash_bank'};
+
+  /// Selected cash account id, or null for "don't move cash".
+  String? _cashAssetId;
+
+  /// The account this asset's trades used last, remembered across currency
+  /// changes so switching back restores it.
+  String? _lastCashAssetId;
+
+  bool get _movesCash =>
+      !_isCashType &&
+      _selectedAsset != null &&
+      !_cashCategories.contains(_selectedAsset!.category);
+
+  /// Cash accounts in the transaction's currency — the movement is booked in
+  /// that currency, so an account in another one would mix units.
+  List<InvestmentAsset> get _cashAccounts => _assets
+      .where((a) =>
+          a.id != null &&
+          _cashCategories.contains(a.category) &&
+          a.currency == _originalCurrency)
+      .toList();
+
+  /// Last account used if it fits the currency, else the only broker cash
+  /// account in that currency, else none.
+  String? _defaultCashAccount() {
+    final accounts = _cashAccounts;
+    if (accounts.any((a) => a.id == _lastCashAssetId)) return _lastCashAssetId;
+    final broker =
+        accounts.where((a) => a.category == 'cash_broker').toList();
+    return broker.length == 1 ? broker.first.id : null;
+  }
+
+  // ── Market close for the trade date (rate sanity check) ──────────────────
+
+  /// The currency's close on the trade date, kept for the sanity check on
+  /// submit even when the field holds a typed or stored rate.
+  double? _marketClose;
+
   bool get _isEditing => widget.existing != null;
 
   /// Trade-date rate fetched from the backend, shown so the user knows the
@@ -82,12 +126,26 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     try {
       final previous =
           await _backendService.getTransactions(assetId: asset.id);
-      if (previous.isEmpty || !mounted) return;
+      if (!mounted) return;
+      _lastCashAssetId = previous
+          .where((t) => t.cashAssetId != null)
+          .map((t) => t.cashAssetId)
+          .firstOrNull; // newest first
+      if (previous.isEmpty) {
+        setState(() => _cashAssetId = _defaultCashAccount());
+        return;
+      }
       final last = previous.first; // API returns newest first
       setState(() {
         _transactionType = last.transactionType;
         _originalCurrency = last.originalCurrency;
-        _exchangeRateCtrl.text = (last.exchangeRate ?? 1.0).toString();
+        // A BRL trade carries rate 1.0; copying it into a foreign-currency
+        // form is how a 1.0 USD/BRL rate got saved. Foreign trades carry
+        // their own rate (flagged as carried over); a missing one stays blank.
+        _exchangeRateCtrl.text = last.originalCurrency == 'BRL'
+            ? '1.0'
+            : (last.exchangeRate?.toString() ?? '');
+        _cashAssetId = _defaultCashAccount();
         _feesCtrl.text = last.feesOriginal.toStringAsFixed(2);
         _prefilledFrom = last.transactionDate;
       });
@@ -109,6 +167,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     final tx = widget.existing;
     if (tx != null) {
       _prefillFrom(tx);
+      // Fetches the close for the sanity check only; the stored rate stays.
+      _maybePrefillFxRate();
     }
 
     // Attached after prefilling so restoring the saved values does not trigger
@@ -129,6 +189,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     _transactionType = tx.transactionType;
     _date = tx.transactionDate;
     _originalCurrency = tx.originalCurrency;
+    _cashAssetId = tx.cashAssetId;
+    _lastCashAssetId = tx.cashAssetId;
     _selectedAsset = _assets.where((a) => a.id == tx.assetId).isNotEmpty
         ? _assets.firstWhere((a) => a.id == tx.assetId)
         : widget.preselectedAsset;
@@ -172,22 +234,61 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   }
 
   /// Fetch the closing rate for the selected trade date and currency and
-  /// prefill the rate field. Best-effort: no rate, no change. Never runs while
-  /// editing — the stored rate is an authoritative tax figure and must not be
-  /// silently rewritten.
+  /// prefill the rate field. Best-effort: no rate, no change. Never prefills
+  /// while editing — the stored rate is an authoritative tax figure and must
+  /// not be silently rewritten.
+  ///
+  /// The close is kept in [_marketClose] either way, so submit can catch a
+  /// typed rate far from the market (55 for 5.5).
   Future<void> _maybePrefillFxRate() async {
-    if (_isEditing || _originalCurrency == 'BRL') return;
+    _marketClose = null;
+    if (_originalCurrency == 'BRL') return;
+    final currency = _originalCurrency;
     final dateStr =
         '${_date.year}-${_date.month.toString().padLeft(2, '0')}-${_date.day.toString().padLeft(2, '0')}';
-    final result =
-        await _backendService.getFxRate(_originalCurrency, dateStr);
-    if (result == null || !mounted) return;
+    final result = await _backendService.getFxRate(currency, dateStr);
+    // Currency switched while fetching: this close belongs to another one.
+    if (result == null || !mounted || currency != _originalCurrency) return;
+    _marketClose = (result['rate_brl'] as num).toDouble();
+    if (_isEditing) return;
     setState(() {
-      _exchangeRateCtrl.text = (result['rate_brl'] as num).toString();
+      _exchangeRateCtrl.text = _marketClose.toString();
       _fxRateDate = result['rate_date'] as String?;
       _prefilledFrom = null; // a fresh market close replaces the stale warning
     });
     _recalcBrl();
+  }
+
+  /// Asks before saving a rate more than 5% away from the trade date's close
+  /// — almost always a typo or a leftover, and it lands in the BRL cost basis
+  /// (tax and P&L). True when there is nothing to ask or the user confirms.
+  Future<bool> _confirmRateDeviation() async {
+    final close = _marketClose;
+    final entered = double.tryParse(_exchangeRateCtrl.text);
+    if (!_showExchangeRate || close == null || entered == null) return true;
+    final deviation = (entered / close - 1).abs();
+    if (deviation <= 0.05) return true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('investments.form.rate_check_title'.tr()),
+        content: Text('investments.form.rate_check_body'.tr(namedArgs: {
+          'entered': entered.toString(),
+          'close': close.toStringAsFixed(4),
+          'currency': _originalCurrency,
+          'pct': (deviation * 100).toStringAsFixed(0),
+        })),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('investments.form.rate_check_fix'.tr())),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('investments.form.rate_check_keep'.tr())),
+        ],
+      ),
+    );
+    return ok == true;
   }
 
   void _recalcOriginalAmt() {
@@ -237,9 +338,13 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     setState(() {
       _originalCurrency = val;
       _fxRateDate = null;
-      if (val == 'BRL') {
-        _exchangeRateCtrl.text = '1.0';
-      }
+      // Never carry a rate across currencies: the old 1.0 from BRL stayed in
+      // the field when the close could not be fetched, and passed validation.
+      // Blank forces a real rate — fetched below or typed.
+      _exchangeRateCtrl.text = val == 'BRL' ? '1.0' : '';
+      _prefilledFrom = null;
+      // The movement is booked in this currency; re-pick an account in it.
+      _cashAssetId = _defaultCashAccount();
     });
     _recalcBrl();
     _maybePrefillFxRate();
@@ -273,6 +378,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         setState(() {
           _assets = [..._assets, created];
           _selectedAsset = created;
+          _cashAssetId = _defaultCashAccount();
         });
       } catch (e) {
         if (mounted) {
@@ -294,6 +400,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       );
       return;
     }
+    if (!await _confirmRateDeviation() || !mounted) return;
 
     setState(() {
       _isSubmitting = true;
@@ -324,6 +431,11 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       'withholding_tax_original': _isIncomeType
           ? (double.tryParse(_withholdingCtrl.text) ?? 0.0)
           : 0.0,
+      // Always sent: on an edit an explicit null unlinks (and removes) the
+      // cash movement instead of silently keeping it.
+      'cash_asset_id': _movesCash && _cashAccounts.any((a) => a.id == _cashAssetId)
+          ? _cashAssetId
+          : null,
     };
 
     if (_showQuantityPrice) {
@@ -645,6 +757,46 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
               },
             ),
             const SizedBox(height: 12),
+
+            // ── Cash account (buy/sell/income on a non-cash asset) ─────────
+            if (_movesCash) ...[
+              DropdownButtonFormField<String?>(
+                // The value must be one of the items: an account in another
+                // currency than the trade's falls back to "don't move cash".
+                value: _cashAccounts.any((a) => a.id == _cashAssetId)
+                    ? _cashAssetId
+                    : null,
+                decoration: InputDecoration(
+                  labelText: (_transactionType == 'buy'
+                          ? 'investments.form.cash_from'
+                          : 'investments.form.cash_to')
+                      .tr(),
+                  border: const OutlineInputBorder(),
+                  helperText: _cashAccounts.isEmpty
+                      ? 'investments.form.cash_no_account'
+                          .tr(namedArgs: {'currency': _originalCurrency})
+                      : null,
+                  helperMaxLines: 2,
+                ),
+                items: [
+                  DropdownMenuItem<String?>(
+                      value: null,
+                      child: Text('investments.form.cash_none'.tr())),
+                  ..._cashAccounts.map((a) => DropdownMenuItem<String?>(
+                        value: a.id,
+                        child: Text(
+                          '${a.name} — ${_categoryLabel(a.category)}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      )),
+                ],
+                onChanged: (v) => setState(() {
+                  _cashAssetId = v;
+                  _lastCashAssetId = v ?? _lastCashAssetId;
+                }),
+              ),
+              const SizedBox(height: 12),
+            ],
 
             // ── Notes ─────────────────────────────────────────────────────
             TextFormField(

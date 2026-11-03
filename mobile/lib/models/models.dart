@@ -278,6 +278,10 @@ class InvestmentAsset {
   final double? yieldOnCostPct;
 
   final double? currentPrice;
+
+  /// Today's quote at today's rate. A present value, so the conversion is
+  /// exact — unlike a historical cost. Null when unconvertible.
+  final double? currentPriceBrl;
   final double? dailyChangePct;
   final double currentValueBrl;
   final double unrealizedPnlBrl;
@@ -286,11 +290,30 @@ class InvestmentAsset {
   // Same figures in the asset's own currency, so average cost can be compared
   // against the Yahoo quote in matching units.
   final String nativeCurrency;
+
+  /// False when a trade paid in another currency had no trade-date close, so
+  /// the *Original figures are zeros standing in for nulls and must not be
+  /// shown (see `pickAssetAmount`).
+  final bool nativeAvailable;
   final double avgCostOriginal;
   final double currentValueOriginal;
   final double totalInvestedOriginal;
   final double realizedGainsOriginal;
   final double dividendsOriginal;
+
+  // USD view, whatever currency each trade was paid in. Costs are accumulated
+  // at each trade's own USD/BRL close; present values at today's rate. Null
+  // means the backend lacked a close — the UI then falls back to an "≈"
+  // conversion instead of showing a number that looks exact.
+  final double? avgCostUsd;
+  final double? totalInvestedUsd;
+  final double? realizedGainsUsd;
+  final double? dividendsUsd;
+  final double? dividends12mUsd;
+  final double? currentPriceUsd;
+  final double? currentValueUsd;
+  final double? unrealizedPnlUsd;
+  final double? unrealizedPnlPctUsd;
 
   /// Share of the active broker portfolio (stocks + ETFs + broker cash).
   /// Null means no share applies — a reserve, or a position that could not be
@@ -304,6 +327,17 @@ class InvestmentAsset {
   final int transactionCount;
   final DateTime? firstTransactionDate;
   final DateTime? lastTransactionDate;
+
+  /// False when the position could not be valued (no quote, a ticker quoted
+  /// in another currency, no FX rate). Its value fields are then zeros
+  /// standing in for nulls — never show them as a value; show [unavailableReason].
+  final bool valueAvailable;
+  final String? unavailableReason;
+
+  /// When the quote was taken, and whether it was served past its freshness
+  /// window because a fresh fetch failed. A stale price must say so.
+  final DateTime? priceAsOf;
+  final bool priceStale;
 
   /// An asset created but never transacted against — distinct from a closed
   /// position, which has history worth keeping.
@@ -344,25 +378,41 @@ class InvestmentAsset {
     this.dividends12mBrl = 0.0,
     this.yieldOnCostPct,
     this.currentPrice,
+    this.currentPriceBrl,
     this.dailyChangePct,
     this.currentValueBrl = 0.0,
     this.unrealizedPnlBrl = 0.0,
     this.unrealizedPnlPct = 0.0,
     this.nativeCurrency = 'BRL',
+    this.nativeAvailable = true,
     this.avgCostOriginal = 0.0,
     this.currentValueOriginal = 0.0,
     this.totalInvestedOriginal = 0.0,
     this.realizedGainsOriginal = 0.0,
     this.dividendsOriginal = 0.0,
+    this.avgCostUsd,
+    this.totalInvestedUsd,
+    this.realizedGainsUsd,
+    this.dividendsUsd,
+    this.dividends12mUsd,
+    this.currentPriceUsd,
+    this.currentValueUsd,
+    this.unrealizedPnlUsd,
+    this.unrealizedPnlPctUsd,
     this.portfolioPct,
     this.inAllocationBase = false,
     this.isClosed = false,
     this.transactionCount = 0,
     this.firstTransactionDate,
     this.lastTransactionDate,
+    this.valueAvailable = true,
+    this.unavailableReason,
+    this.priceAsOf,
+    this.priceStale = false,
   });
 
   factory InvestmentAsset.fromJson(Map<String, dynamic> json) {
+    final asOf = json['price_as_of'] as num?; // unix seconds
     return InvestmentAsset(
       id: json['id'],
       familyId: json['family_id'] ?? '',
@@ -383,11 +433,24 @@ class InvestmentAsset {
           (json['dividends_12m_brl'] as num? ?? 0.0).toDouble(),
       yieldOnCostPct: (json['yield_on_cost_pct'] as num?)?.toDouble(),
       currentPrice: (json['current_price'] as num?)?.toDouble(),
+      currentPriceBrl: (json['current_price_brl'] as num?)?.toDouble(),
       dailyChangePct: (json['daily_change_pct'] as num?)?.toDouble(),
       currentValueBrl: (json['current_value_brl'] as num? ?? 0.0).toDouble(),
       unrealizedPnlBrl: (json['unrealized_pnl_brl'] as num? ?? 0.0).toDouble(),
       unrealizedPnlPct: (json['unrealized_pnl_pct'] as num? ?? 0.0).toDouble(),
       nativeCurrency: json['native_currency'] ?? json['currency'] ?? 'BRL',
+      // Absent on older backends, which only ever sent complete figures.
+      nativeAvailable: json['native_available'] != false,
+      avgCostUsd: (json['avg_cost_usd'] as num?)?.toDouble(),
+      totalInvestedUsd: (json['total_invested_usd'] as num?)?.toDouble(),
+      realizedGainsUsd: (json['realized_gains_usd'] as num?)?.toDouble(),
+      dividendsUsd: (json['dividends_usd'] as num?)?.toDouble(),
+      dividends12mUsd: (json['dividends_12m_usd'] as num?)?.toDouble(),
+      currentPriceUsd: (json['current_price_usd'] as num?)?.toDouble(),
+      currentValueUsd: (json['current_value_usd'] as num?)?.toDouble(),
+      unrealizedPnlUsd: (json['unrealized_pnl_usd'] as num?)?.toDouble(),
+      unrealizedPnlPctUsd:
+          (json['unrealized_pnl_pct_usd'] as num?)?.toDouble(),
       avgCostOriginal: (json['avg_cost_original'] as num? ?? 0.0).toDouble(),
       totalInvestedOriginal:
           (json['total_invested_original'] as num? ?? 0.0).toDouble(),
@@ -398,6 +461,13 @@ class InvestmentAsset {
       portfolioPct: (json['portfolio_pct'] as num?)?.toDouble(),
       inAllocationBase: json['in_allocation_base'] == true,
       isClosed: json['is_closed'] == true,
+      // Absent (asset list endpoint) means nothing was valued, not a failure.
+      valueAvailable: json['value_available'] != false,
+      unavailableReason: json['unavailable_reason'],
+      priceAsOf: asOf == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch((asOf * 1000).round()),
+      priceStale: json['price_stale'] == true,
       transactionCount: (json['transaction_count'] as num? ?? 0).toInt(),
       firstTransactionDate: json['first_transaction_date'] == null
           ? null
@@ -435,22 +505,37 @@ class InvestmentAsset {
         dividends12mBrl: dividends12mBrl,
         yieldOnCostPct: yieldOnCostPct,
         currentPrice: currentPrice,
+        currentPriceBrl: currentPriceBrl,
         dailyChangePct: dailyChangePct,
         currentValueBrl: currentValueBrl,
         unrealizedPnlBrl: unrealizedPnlBrl,
         unrealizedPnlPct: unrealizedPnlPct,
         nativeCurrency: edited.currency,
+        nativeAvailable: nativeAvailable,
         avgCostOriginal: avgCostOriginal,
         currentValueOriginal: currentValueOriginal,
         totalInvestedOriginal: totalInvestedOriginal,
         realizedGainsOriginal: realizedGainsOriginal,
         dividendsOriginal: dividendsOriginal,
+        avgCostUsd: avgCostUsd,
+        totalInvestedUsd: totalInvestedUsd,
+        realizedGainsUsd: realizedGainsUsd,
+        dividendsUsd: dividendsUsd,
+        dividends12mUsd: dividends12mUsd,
+        currentPriceUsd: currentPriceUsd,
+        currentValueUsd: currentValueUsd,
+        unrealizedPnlUsd: unrealizedPnlUsd,
+        unrealizedPnlPctUsd: unrealizedPnlPctUsd,
         portfolioPct: portfolioPct,
         inAllocationBase: inAllocationBase,
         isClosed: isClosed,
         transactionCount: transactionCount,
         firstTransactionDate: firstTransactionDate,
         lastTransactionDate: lastTransactionDate,
+        valueAvailable: valueAvailable,
+        unavailableReason: unavailableReason,
+        priceAsOf: priceAsOf,
+        priceStale: priceStale,
       );
 
   /// Payload for create and update. Optional fields are always present so that
@@ -482,12 +567,30 @@ class InvestmentTransaction {
   final double originalAmount;
   final double? exchangeRate;
   final double brlAmount;
+
+  /// [brlAmount] at this trade's own rate (its frozen rate when paid in USD,
+  /// else that day's USD/BRL close). Null when no close exists. Read-only:
+  /// computed by the list endpoint, never sent back.
+  final double? usdAmount;
+
+  /// Same, in the asset's own currency (shown for EUR/PLN assets, which keep
+  /// their currency in the foreign view).
+  final double? assetAmount;
   final double feesBrl;
   // Fee as it was typed, in the transaction's currency. Needed to prefill the
   // edit form — feesBrl is the converted figure and would round-trip wrong.
   final double feesOriginal;
   final double withholdingTaxOriginal;
   final String? notes;
+
+  /// The cash account this trade moved money in (buy → withdrawal, sell or
+  /// income → deposit), or null. Sent as `cash_asset_id` on save.
+  final String? cashAssetId;
+
+  /// Set on a cash movement created by another transaction. Such a row is
+  /// locked: it changes only through the trade that created it.
+  final String? linkedTransactionId;
+  bool get isLinkedCashMovement => linkedTransactionId != null;
 
   // Embedded from JOIN (present in list responses)
   final String? assetName;
@@ -507,10 +610,14 @@ class InvestmentTransaction {
     required this.originalAmount,
     this.exchangeRate,
     required this.brlAmount,
+    this.usdAmount,
+    this.assetAmount,
     this.feesBrl = 0.0,
     this.feesOriginal = 0.0,
     this.withholdingTaxOriginal = 0.0,
     this.notes,
+    this.cashAssetId,
+    this.linkedTransactionId,
     this.assetName,
     this.assetSymbol,
     this.assetCategory,
@@ -531,11 +638,15 @@ class InvestmentTransaction {
       originalAmount: (json['original_amount'] as num? ?? 0.0).toDouble(),
       exchangeRate: (json['exchange_rate'] as num?)?.toDouble(),
       brlAmount: (json['brl_amount'] as num? ?? 0.0).toDouble(),
+      usdAmount: (json['usd_amount'] as num?)?.toDouble(),
+      assetAmount: (json['asset_amount'] as num?)?.toDouble(),
       feesBrl: (json['fees_brl'] as num? ?? 0.0).toDouble(),
       feesOriginal: (json['fees_original'] as num? ?? 0.0).toDouble(),
       withholdingTaxOriginal:
           (json['withholding_tax_original'] as num? ?? 0.0).toDouble(),
       notes: json['notes'],
+      cashAssetId: json['cash_asset_id'],
+      linkedTransactionId: json['linked_transaction_id'],
       assetName: assetInfo?['name'],
       assetSymbol: assetInfo?['symbol'],
       assetCategory: assetInfo?['category'],
@@ -569,6 +680,10 @@ class CategorySummary {
   final double valueBrl;
   final double investedBrl;
 
+  /// Null when a USD figure was unavailable (no rate / no trade-date close).
+  final double? valueUsd;
+  final double? investedUsd;
+
   double get pnlBrl => valueBrl - investedBrl;
   double get pnlPct => investedBrl > 0 ? (pnlBrl / investedBrl * 100) : 0.0;
 
@@ -576,6 +691,8 @@ class CategorySummary {
     required this.category,
     required this.valueBrl,
     required this.investedBrl,
+    this.valueUsd,
+    this.investedUsd,
   });
 
   factory CategorySummary.fromJson(String category, Map<String, dynamic> json) {
@@ -583,6 +700,8 @@ class CategorySummary {
       category: category,
       valueBrl: (json['value_brl'] as num? ?? 0.0).toDouble(),
       investedBrl: (json['invested_brl'] as num? ?? 0.0).toDouble(),
+      valueUsd: (json['value_usd'] as num?)?.toDouble(),
+      investedUsd: (json['invested_usd'] as num?)?.toDouble(),
     );
   }
 }
@@ -607,6 +726,12 @@ class GroupSummary {
   /// above understates the truth.
   final bool complete;
 
+  /// USD side; all null when any position lacks a USD figure.
+  final double? valueUsd;
+  final double? investedUsd;
+  final double? pnlUsd;
+  final double? pnlPctUsd;
+
   GroupSummary({
     this.valueBrl = 0.0,
     this.investedBrl = 0.0,
@@ -614,6 +739,10 @@ class GroupSummary {
     this.pnlPct,
     this.shareOfTotalPct,
     this.complete = true,
+    this.valueUsd,
+    this.investedUsd,
+    this.pnlUsd,
+    this.pnlPctUsd,
   });
 
   factory GroupSummary.fromJson(Map<String, dynamic> json) => GroupSummary(
@@ -623,6 +752,10 @@ class GroupSummary {
         pnlPct: (json['pnl_pct'] as num?)?.toDouble(),
         shareOfTotalPct: (json['share_of_total_pct'] as num?)?.toDouble(),
         complete: json['complete'] != false,
+        valueUsd: (json['value_usd'] as num?)?.toDouble(),
+        investedUsd: (json['invested_usd'] as num?)?.toDouble(),
+        pnlUsd: (json['pnl_usd'] as num?)?.toDouble(),
+        pnlPctUsd: (json['pnl_pct_usd'] as num?)?.toDouble(),
       );
 }
 
@@ -631,9 +764,25 @@ class PortfolioSummary {
   final double totalInvestedBrl;
   final double totalPnlBrl;
   final double totalPnlPct;
-  final double exchangeRateUsdBrl;
+
+  /// USD totals. Invested is each asset's own USD cost summed (each trade at
+  /// its own close), so it is not totalInvestedBrl ÷ today's rate. Null when
+  /// any asset lacks a USD figure.
+  final double? totalValueUsd;
+  final double? totalInvestedUsd;
+  final double? totalPnlUsd;
+  final double? totalPnlPctUsd;
+
+  /// Today's USD/BRL rate, or null when unavailable — never a default: a
+  /// guessed rate would put invented numbers on screen with nothing saying so.
+  final double? exchangeRateUsdBrl;
   final Map<String, CategorySummary> byCategory;
   final List<InvestmentAsset> assets;
+
+  /// False when some position could not be valued; the totals above then
+  /// exclude it and [unavailableAssets] says which one and why.
+  final bool totalsComplete;
+  final List<({String name, String? reason})> unavailableAssets;
 
   /// Denominator behind every [InvestmentAsset.portfolioPct]: the value of the
   /// active broker portfolio (stocks + ETFs + broker cash).
@@ -662,6 +811,8 @@ class PortfolioSummary {
   /// Portfolio-level dividend figures, all net of withholding.
   final double dividendsTotalNetBrl;
   final double dividends12mNetBrl;
+  final double? dividendsTotalNetUsd;
+  final double? dividends12mNetUsd;
 
   /// Trailing-12m income over invested capital; null when nothing invested.
   final double? portfolioYieldOnCostPct;
@@ -683,6 +834,17 @@ class PortfolioSummary {
   double get closedRealizedBrl => closedPositions.fold(
       0.0, (sum, a) => sum + a.realizedGainsBrl);
 
+  /// Same in USD; null when any closed position lacks a USD figure.
+  double? get closedRealizedUsd {
+    var sum = 0.0;
+    for (final a in closedPositions) {
+      final v = a.realizedGainsUsd;
+      if (v == null) return null;
+      sum += v;
+    }
+    return sum;
+  }
+
   /// Assets created but never transacted against. Listed so they can be used
   /// or deleted instead of lingering invisibly.
   List<InvestmentAsset> get emptyAssets =>
@@ -702,6 +864,10 @@ class PortfolioSummary {
     required this.totalInvestedBrl,
     required this.totalPnlBrl,
     required this.totalPnlPct,
+    this.totalValueUsd,
+    this.totalInvestedUsd,
+    this.totalPnlUsd,
+    this.totalPnlPctUsd,
     required this.exchangeRateUsdBrl,
     required this.byCategory,
     required this.assets,
@@ -711,7 +877,11 @@ class PortfolioSummary {
     this.byGroup = const {},
     this.dividendsTotalNetBrl = 0.0,
     this.dividends12mNetBrl = 0.0,
+    this.dividendsTotalNetUsd,
+    this.dividends12mNetUsd,
     this.portfolioYieldOnCostPct,
+    this.totalsComplete = true,
+    this.unavailableAssets = const [],
   });
 
   factory PortfolioSummary.fromJson(Map<String, dynamic> json) {
@@ -719,12 +889,27 @@ class PortfolioSummary {
     final byCategory = rawByCategory.map(
       (k, v) => MapEntry(k, CategorySummary.fromJson(k, v as Map<String, dynamic>)),
     );
+    final dividends = json['dividends'] as Map<String, dynamic>?;
     return PortfolioSummary(
       totalValueBrl: (json['total_value_brl'] as num? ?? 0.0).toDouble(),
       totalInvestedBrl: (json['total_invested_brl'] as num? ?? 0.0).toDouble(),
       totalPnlBrl: (json['total_pnl_brl'] as num? ?? 0.0).toDouble(),
       totalPnlPct: (json['total_pnl_pct'] as num? ?? 0.0).toDouble(),
-      exchangeRateUsdBrl: (json['exchange_rate_usd_brl'] as num? ?? 5.0).toDouble(),
+      totalValueUsd: (json['total_value_usd'] as num?)?.toDouble(),
+      totalInvestedUsd: (json['total_invested_usd'] as num?)?.toDouble(),
+      totalPnlUsd: (json['total_pnl_usd'] as num?)?.toDouble(),
+      totalPnlPctUsd: (json['total_pnl_pct_usd'] as num?)?.toDouble(),
+      dividendsTotalNetUsd: (dividends?['total_net_usd'] as num?)?.toDouble(),
+      dividends12mNetUsd: (dividends?['last_12m_net_usd'] as num?)?.toDouble(),
+      exchangeRateUsdBrl: (json['exchange_rate_usd_brl'] as num?)?.toDouble(),
+      totalsComplete: json['totals_complete'] != false,
+      unavailableAssets: [
+        for (final u in (json['unavailable_assets'] as List? ?? const []))
+          (
+            name: (u as Map<String, dynamic>)['name'] as String? ?? '',
+            reason: u['reason'] as String?,
+          ),
+      ],
       allocationBaseBrl:
           (json['allocation_base_brl'] as num? ?? 0.0).toDouble(),
       allocationComplete: json['allocation_complete'] != false,

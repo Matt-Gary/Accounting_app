@@ -20,12 +20,26 @@ def trailing_income_brl(trail, as_of: date, months: int = 12) -> float:
     The lower bound is exclusive: an event dated exactly twelve months ago has
     rolled out of the trailing year. Future-dated events never count.
     """
+    return trailing_income(trail, as_of, months, 'income_brl')
+
+
+def trailing_income(trail, as_of: date, months: int = 12,
+                    attr: str = 'income_brl') -> float | None:
+    """
+    Same window as `trailing_income_brl`, over any income field of the trail
+    (`income_orig` is in the replay's asset currency). None when a step in the
+    window has no figure — a partial sum would understate the income.
+    """
     cutoff = as_of - relativedelta(months=months)
-    return sum(
-        step.income_brl for step in trail
-        if step.transaction_type in INCOME_TYPES
-        and cutoff < step.transaction_date <= as_of
-    )
+    total = 0.0
+    for step in trail:
+        if (step.transaction_type in INCOME_TYPES
+                and cutoff < step.transaction_date <= as_of):
+            value = getattr(step, attr)
+            if value is None:
+                return None
+            total += value
+    return total
 
 
 def yield_on_cost_pct(income_brl: float, invested_brl) -> float | None:

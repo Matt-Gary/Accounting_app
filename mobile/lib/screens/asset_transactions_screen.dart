@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../utils/asset_display.dart';
 import '../utils/money_format.dart';
 import '../widgets/asset_form_sheet.dart';
 import '../widgets/charts/price_history_chart.dart';
@@ -10,7 +11,23 @@ import 'add_transaction_screen.dart';
 class AssetTransactionsScreen extends StatefulWidget {
   final InvestmentAsset asset;
 
-  const AssetTransactionsScreen({super.key, required this.asset});
+  /// The investments module has one BRL/USD toggle: this screen opens in the
+  /// portfolio screen's choice and reports a flip back through
+  /// [onDisplayCurrencyChanged].
+  final String displayCurrency;
+  final ValueChanged<String>? onDisplayCurrencyChanged;
+
+  /// Today's USD/BRL rate, only for the "≈" fallback when a USD figure is
+  /// missing. Non-positive means unavailable.
+  final double usdBrlRate;
+
+  const AssetTransactionsScreen({
+    super.key,
+    required this.asset,
+    this.displayCurrency = 'BRL',
+    this.onDisplayCurrencyChanged,
+    this.usdBrlRate = 0,
+  });
 
   @override
   State<AssetTransactionsScreen> createState() =>
@@ -36,30 +53,19 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
   String _txTypeLabel(String t) => 'investments.tx_types.$t'.tr();
   String _categoryLabel(String c) => 'investments.categories.$c'.tr();
 
-  /// Which currency the figures on this screen are shown in: BRL, or the
-  /// currency the asset was actually bought in.
+  /// Which currency every figure on this screen is shown in — BRL or USD,
+  /// whatever the asset is quoted in or each trade was paid in.
   late String _displayCurrency;
 
   /// Local copy so an edit shows immediately instead of waiting for the
   /// portfolio screen to reload.
   late InvestmentAsset _asset;
 
-  /// The asset's own currency. Falls back to `currency` for assets that
-  /// predate `native_currency` being returned.
-  String get _assetCurrency => _asset.nativeCurrency.isNotEmpty
-      ? _asset.nativeCurrency
-      : _asset.currency;
-
-  /// A BRL-denominated asset has nothing to switch between.
-  bool get _canSwitchCurrency => _assetCurrency != 'BRL';
-
-  bool get _showingNative => _displayCurrency != 'BRL';
-
   @override
   void initState() {
     super.initState();
     _asset = widget.asset;  // seed once
-    _displayCurrency = 'BRL';
+    _displayCurrency = widget.displayCurrency;
     _loadTransactions();
   }
 
@@ -144,22 +150,51 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
     }
   }
 
-  /// Formats a value that is already expressed in [currency]. Nothing here
-  /// converts — each figure is picked from the pair the backend computed, so a
-  /// native amount is never re-derived from a BRL one using today's rate.
-  String _money(double v, {String? currency}) =>
-      formatMoney(v, currency ?? _displayCurrency, context.locale.toString());
+  /// Formats a value that is already expressed in [currency] — no conversion.
+  String _money(double v, String currency) =>
+      formatMoney(v, currency, context.locale.toString());
 
-  /// Picks the right member of a BRL/native pair for the current toggle.
-  String _pick(double brl, double native) =>
-      _money(_showingNative ? native : brl);
+  /// The currency this asset's figures are shown in: BRL, or in the foreign
+  /// view USD — except an EUR/PLN asset, which keeps its own currency.
+  String get _viewCurrency =>
+      assetDisplayCurrency(_displayCurrency, _asset.nativeCurrency);
 
-  Widget _currencyBtn(String currency) {
-    final selected = _displayCurrency == currency;
+  /// The representation of a figure for the current toggle — also what to
+  /// sign and colour by. Each one is picked from what the backend computed
+  /// (BRL, USD, the asset's own currency), so a figure is never re-derived
+  /// from a BRL one at today's rate (see `utils/asset_display.dart`).
+  DisplayAmount _pickAmount(double brl, double? usd, double? native) =>
+      pickAssetAmount(
+        displayCurrency: _displayCurrency,
+        nativeCurrency: _asset.nativeCurrency,
+        brl: brl,
+        usd: usd,
+        native: native ?? 0,
+        nativeAvailable: _asset.nativeAvailable && native != null,
+        usdBrlRate: widget.usdBrlRate,
+      );
+
+  /// Formats a figure in the current view currency; '≈' marks the fallback
+  /// conversion used when the exact figure is missing.
+  String _pick(double brl, double? usd, double? native,
+      {bool signed = false}) {
+    final a = _pickAmount(brl, usd, native);
+    final text = _money(a.value, a.currency);
+    final withSign = signed && a.value >= 0 ? '+$text' : text;
+    return a.exact ? withSign : '≈ $withSign';
+  }
+
+  /// [value] is the shared toggle state ('BRL' / 'USD'); [label] is what this
+  /// asset shows for it — 'EUR' for a euro asset's foreign view.
+  Widget _currencyBtn(String value, String label) {
+    final selected = _displayCurrency == value;
     final onSurface = Theme.of(context).appBarTheme.foregroundColor ??
         Theme.of(context).colorScheme.onSurface;
     return GestureDetector(
-      onTap: () => setState(() => _displayCurrency = currency),
+      onTap: () {
+        setState(() => _displayCurrency = value);
+        widget.onDisplayCurrencyChanged?.call(value);
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
@@ -168,7 +203,7 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
           borderRadius: BorderRadius.circular(14),
         ),
         child: Text(
-          currency,
+          label,
           style: TextStyle(
             fontSize: 11,
             fontWeight: selected ? FontWeight.bold : FontWeight.normal,
@@ -200,9 +235,30 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
         ),
       ),
     );
-    if (refreshed == true) {
-      _didModify = true;
-      _loadTransactions();
+    if (refreshed == true) _afterLedgerChange();
+  }
+
+  /// A transaction was added, edited or deleted: reload the list AND the
+  /// position. The card's figures come from the portfolio endpoint, so
+  /// reloading only the list left it showing pre-edit values until the user
+  /// went back and refreshed.
+  void _afterLedgerChange() {
+    _didModify = true;
+    _loadTransactions();
+    _refreshPosition();
+  }
+
+  Future<void> _refreshPosition() async {
+    final id = _asset.id;
+    if (id == null) return;
+    try {
+      final portfolio = await _backendService.getPortfolio();
+      final fresh = portfolio.assets.where((a) => a.id == id);
+      if (fresh.isNotEmpty && mounted) {
+        setState(() => _asset = fresh.first);
+      }
+    } catch (_) {
+      // The list still reloads; a stale card beats an error over the screen.
     }
   }
 
@@ -213,7 +269,8 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
         title: Text('investments.tx.delete_title'.tr()),
         content: Text(
           '${_txTypeLabel(tx.transactionType)} · '
-          '${_money(tx.brlAmount)} · ${_formatDate(tx.transactionDate)}',
+          '${_pick(tx.brlAmount, tx.usdAmount, tx.assetAmount)} · '
+          '${_formatDate(tx.transactionDate)}',
         ),
         actions: [
           TextButton(
@@ -229,8 +286,7 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
     if (confirmed == true) {
       try {
         await _backendService.deleteTransaction(tx.id!);
-        _didModify = true;
-        _loadTransactions();
+        _afterLedgerChange();
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -267,22 +323,21 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
         ),
       ),
     );
-    if (saved == true) {
-      _didModify = true;
-      _loadTransactions();
-    }
+    if (saved == true) _afterLedgerChange();
   }
 
   @override
   Widget build(BuildContext context) {
     context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     final asset = _asset;
+    // The system back gesture popped with a null result, so the portfolio
+    // screen only refreshed when the app-bar arrow was used. Intercept it and
+    // pop with the same result the arrow returns.
     return PopScope(
-      canPop: true,
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop && _didModify) {
-          // Signal parent to refresh
-        }
+        if (didPop) return; // already popped by the arrow, with its result
+        Navigator.pop(context, _didModify);
       },
       child: Scaffold(
         appBar: AppBar(
@@ -303,12 +358,12 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
             onPressed: () => Navigator.pop(context, _didModify),
           ),
           actions: [
-            if (_canSwitchCurrency)
-              Row(children: [
-                _currencyBtn('BRL'),
-                const SizedBox(width: 6),
-                _currencyBtn(_assetCurrency),
-              ]),
+            Row(children: [
+              _currencyBtn('BRL', 'BRL'),
+              const SizedBox(width: 6),
+              _currencyBtn('USD',
+                  assetDisplayCurrency('USD', _asset.nativeCurrency)),
+            ]),
             PopupMenuButton<String>(
               onSelected: (v) {
                 if (v == 'edit') _editAsset();
@@ -400,9 +455,8 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
   /// showing that grid would be four meaningless zeros. What matters once a
   /// position is sold out is what it actually made.
   Widget _buildClosedCard(InvestmentAsset asset) {
-    final realized = _showingNative
-        ? asset.realizedGainsOriginal
-        : asset.realizedGainsBrl;
+    final realized =
+        _pickAmount(asset.realizedGainsBrl, asset.realizedGainsUsd, asset.realizedGainsOriginal).value;
     final scheme = Theme.of(context).colorScheme;
 
     return Card(
@@ -438,7 +492,8 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                           style: const TextStyle(
                               fontSize: 12, color: Colors.grey)),
                       Text(
-                        '${realized >= 0 ? '+' : ''}${_money(realized)}',
+                        _pick(asset.realizedGainsBrl, asset.realizedGainsUsd, asset.realizedGainsOriginal,
+                            signed: true),
                         style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -456,7 +511,7 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                             style: const TextStyle(
                                 fontSize: 12, color: Colors.grey)),
                         Text(
-                          _pick(asset.dividendsBrl, asset.dividendsOriginal),
+                          _pick(asset.dividendsBrl, asset.dividendsUsd, asset.dividendsOriginal),
                           style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
@@ -476,15 +531,18 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
   Widget _buildPositionCard(InvestmentAsset asset) {
     if (asset.isClosed) return _buildClosedCard(asset);
     // Each figure is read from whichever of the two the backend computed —
-    // the native P&L excludes the FX component by construction, so switching
-    // the toggle shows the pure asset move rather than a reconverted total.
-    final pnl = _showingNative
-        ? asset.unrealizedPnlOriginal
-        : asset.unrealizedPnlBrl;
-    final pnlPct = _showingNative
+    // the USD P&L is the gain in dollars with each trade at its own rate, so
+    // switching shows a real figure rather than a reconverted total.
+    final pnl =
+        _pickAmount(asset.unrealizedPnlBrl, asset.unrealizedPnlUsd, asset.unrealizedPnlOriginal).value;
+    final pnlPct = _viewCurrency == asset.nativeCurrency &&
+            _viewCurrency != 'BRL' &&
+            _viewCurrency != 'USD' &&
+            asset.nativeAvailable
         ? asset.unrealizedPnlPctOriginal
-        : asset.unrealizedPnlPct;
-    final isProfit = pnl >= 0;
+        : _viewCurrency == 'USD' && asset.unrealizedPnlPctUsd != null
+            ? asset.unrealizedPnlPctUsd!
+            : asset.unrealizedPnlPct;
     return Card(
       margin: const EdgeInsets.all(12),
       child: Padding(
@@ -515,7 +573,7 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                       Text('investments.position.avg_price'.tr(),
                           style: const TextStyle(
                               fontSize: 12, color: Colors.grey)),
-                      Text(_pick(asset.avgCostBrl, asset.avgCostOriginal),
+                      Text(_pick(asset.avgCostBrl, asset.avgCostUsd, asset.avgCostOriginal),
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.bold)),
                     ],
@@ -529,8 +587,12 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                           style: const TextStyle(
                               fontSize: 12, color: Colors.grey)),
                       Text(
-                          _pick(asset.currentValueBrl,
-                              asset.currentValueOriginal),
+                          // Unvalued: its zero is a placeholder, not a value.
+                          asset.valueAvailable
+                              ? _pick(asset.currentValueBrl,
+                                  asset.currentValueUsd,
+                                  asset.currentValueOriginal)
+                              : '—',
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.bold)),
                     ],
@@ -550,7 +612,7 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                               fontSize: 12, color: Colors.grey)),
                       Text(
                           _pick(asset.totalInvestedBrl,
-                              asset.totalInvestedOriginal),
+                              asset.totalInvestedUsd, asset.totalInvestedOriginal),
                           style: const TextStyle(fontSize: 14)),
                     ],
                   ),
@@ -563,7 +625,8 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                           style: const TextStyle(
                               fontSize: 12, color: Colors.grey)),
                       Text(
-                        '${isProfit ? '+' : ''}${_money(pnl)} (${pnlPct.toStringAsFixed(1)}%)',
+                        '${_pick(asset.unrealizedPnlBrl, asset.unrealizedPnlUsd, asset.unrealizedPnlOriginal, signed: true)}'
+                        ' (${pnlPct.toStringAsFixed(1)}%)',
                         style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
@@ -588,12 +651,14 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                                   fontSize: 12, color: Colors.grey)),
                           Text(
                             _pick(asset.realizedGainsBrl,
-                                asset.realizedGainsOriginal),
+                                asset.realizedGainsUsd, asset.realizedGainsOriginal),
                             style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
-                                color:
-                                    _pnlColor(asset.realizedGainsBrl)),
+                                color: _pnlColor(_pickAmount(
+                                        asset.realizedGainsBrl,
+                                        asset.realizedGainsUsd, asset.realizedGainsOriginal)
+                                    .value)),
                           ),
                         ],
                       ),
@@ -607,7 +672,7 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                               style: const TextStyle(
                                   fontSize: 12, color: Colors.grey)),
                           Text(
-                            _pick(asset.dividendsBrl, asset.dividendsOriginal),
+                            _pick(asset.dividendsBrl, asset.dividendsUsd, asset.dividendsOriginal),
                             style: const TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
@@ -635,13 +700,11 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
     );
   }
 
-  /// The amount in whichever currency the headline is NOT showing, so a
-  /// foreign trade always displays both figures at once.
+  /// What was actually paid, whenever the headline shows another currency —
+  /// so a converted figure is always traceable to the one that was typed.
   String _secondaryAmount(InvestmentTransaction tx) {
-    if (tx.originalCurrency == 'BRL') return '';
-    return _showingNative
-        ? ' · ${_money(tx.brlAmount, currency: 'BRL')}'
-        : ' · ${_money(tx.originalAmount, currency: tx.originalCurrency)}';
+    if (tx.originalCurrency == _viewCurrency) return '';
+    return ' · ${_money(tx.originalAmount, tx.originalCurrency)}';
   }
 
   Widget _buildTxTile(InvestmentTransaction tx) {
@@ -652,6 +715,12 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
       key: Key(tx.id ?? tx.transactionDate.toIso8601String()),
       direction: DismissDirection.endToStart,
       confirmDismiss: (_) async {
+        // A movement created by a trade changes only through that trade.
+        if (tx.isLinkedCashMovement) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('investments.tx.linked_locked'.tr())));
+          return false;
+        }
         await _deleteTransaction(tx);
         return false; // We handle removal via reload
       },
@@ -675,12 +744,10 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
                 fontSize: 12, fontWeight: FontWeight.w600, color: typeColor),
           ),
         ),
-        // Headline follows the toggle; the other currency stays on the
-        // subtitle so both are always visible for a foreign-currency trade.
+        // Headline follows the toggle (USD at the trade's own rate); the
+        // currency actually paid stays on the subtitle when it differs.
         title: Text(
-          _showingNative
-              ? _money(tx.originalAmount, currency: tx.originalCurrency)
-              : _money(tx.brlAmount, currency: 'BRL'),
+          _pick(tx.brlAmount, tx.usdAmount, tx.assetAmount),
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         subtitle: Text(
@@ -694,11 +761,20 @@ class _AssetTransactionsScreenState extends State<AssetTransactionsScreen> {
           children: [
             if (tx.notes != null)
               const Icon(Icons.notes, size: 16, color: Colors.grey),
-            IconButton(
-              icon: const Icon(Icons.edit_outlined, size: 18),
-              tooltip: 'common.edit'.tr(),
-              onPressed: () => _openEditTransaction(tx),
-            ),
+            if (tx.isLinkedCashMovement)
+              Tooltip(
+                message: 'investments.tx.linked_locked'.tr(),
+                child: const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Icon(Icons.link, size: 18, color: Colors.grey),
+                ),
+              )
+            else
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 18),
+                tooltip: 'common.edit'.tr(),
+                onPressed: () => _openEditTransaction(tx),
+              ),
           ],
         ),
       ),
@@ -731,6 +807,10 @@ class _TransactionDetailSheet extends StatelessWidget {
           const SizedBox(height: 12),
           _row('investments.tx.date'.tr(), _fmt(tx.transactionDate)),
           _row('investments.tx.amount_brl'.tr(), _money(tx.brlAmount)),
+          // A trade paid in USD already shows its USD amount as the original.
+          if (tx.originalCurrency != 'USD' && tx.usdAmount != null)
+            _row('investments.tx.amount_usd'.tr(),
+                _money(tx.usdAmount!, 'USD')),
           if (tx.quantity > 0)
             _row('investments.tx.quantity'.tr(),
                 tx.quantity.toStringAsFixed(6)),
@@ -754,14 +834,18 @@ class _TransactionDetailSheet extends StatelessWidget {
             ),
           if (tx.notes != null) _row('investments.tx.notes'.tr(), tx.notes!),
           const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: () => Navigator.pop(context, 'edit'),
-              icon: const Icon(Icons.edit, size: 18),
-              label: Text('common.edit'.tr()),
+          if (tx.isLinkedCashMovement)
+            Text('investments.tx.linked_locked'.tr(),
+                style: const TextStyle(fontSize: 12, color: Colors.grey))
+          else
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => Navigator.pop(context, 'edit'),
+                icon: const Icon(Icons.edit, size: 18),
+                label: Text('common.edit'.tr()),
+              ),
             ),
-          ),
           const SizedBox(height: 8),
         ],
       ),
