@@ -135,7 +135,7 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
               const SizedBox(height: 16),
 
               DropdownButtonFormField<String>(
-                value: _category,
+                initialValue: _category,
                 decoration: InputDecoration(
                   labelText: 'investments.asset_form.category'.tr(),
                   border: const OutlineInputBorder(),
@@ -180,7 +180,7 @@ class _AssetFormSheetState extends State<AssetFormSheet> {
 
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _currency,
+                initialValue: _currency,
                 decoration: InputDecoration(
                     labelText: 'investments.asset_form.currency'.tr(),
                     border: const OutlineInputBorder()),
