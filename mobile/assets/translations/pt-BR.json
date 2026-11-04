@@ -332,7 +332,6 @@
       "cash_to": "Creditado na conta de caixa",
       "cash_none": "Não movimentar caixa",
       "cash_no_account": "Nenhuma conta de caixa em {currency} — crie uma para movimentar o caixa automaticamente.",
-      "oversell": "Maior que as {held} unidades em carteira",
       "withholding": "Imposto retido na fonte ({currency}) — opcional",
       "withholding_helper": "Imposto retido no exterior sobre este dividendo/cupom. A renda é exibida líquida.",
       "withholding_exceeds_gross": "Não pode exceder o valor bruto",

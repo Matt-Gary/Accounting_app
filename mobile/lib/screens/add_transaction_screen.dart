@@ -489,7 +489,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
           children: [
             // ── Asset ─────────────────────────────────────────────────────
             DropdownButtonFormField<InvestmentAsset>(
-              value: _selectedAsset,
+              initialValue: _selectedAsset,
               decoration: InputDecoration(
                 labelText: 'investments.form.asset'.tr(),
                 border: const OutlineInputBorder(),
@@ -526,7 +526,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
             // ── Transaction Type ───────────────────────────────────────────
             DropdownButtonFormField<String>(
-              value: _transactionType,
+              initialValue: _transactionType,
               decoration: InputDecoration(
                 labelText: 'investments.form.tx_type'.tr(),
                 border: const OutlineInputBorder(),
@@ -574,16 +574,12 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   if (_showQuantityPrice && (v == null || v.isEmpty)) {
                     return 'investments.form.quantity_required'.tr();
                   }
-                  // Early catch only — the backend replays the ledger on
-                  // every write and is the authority (covers edits too).
-                  if (!_isEditing && _transactionType == 'sell') {
-                    final qty = double.tryParse(v ?? '');
-                    final held = _selectedAsset?.quantity;
-                    if (qty != null && held != null && qty > held + 1e-9) {
-                      return 'investments.form.oversell'
-                          .tr(namedArgs: {'held': _trim(held)});
-                    }
-                  }
+                  // No client-side oversell check: GET /investments/assets
+                  // returns raw rows without a computed quantity, so "held"
+                  // was always 0 and every sell was blocked. Today's holding
+                  // is the wrong test anyway for a back-dated sell — the
+                  // backend replays the date-ordered ledger on every write
+                  // and its 400 is shown inline via _submitError.
                   return null;
                 },
               ),
@@ -592,7 +588,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
             // ── Original Currency ──────────────────────────────────────────
             DropdownButtonFormField<String>(
-              value: _originalCurrency,
+              initialValue: _originalCurrency,
               decoration: InputDecoration(
                 labelText: 'investments.form.currency'.tr(),
                 border: const OutlineInputBorder(),
@@ -763,7 +759,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
               DropdownButtonFormField<String?>(
                 // The value must be one of the items: an account in another
                 // currency than the trade's falls back to "don't move cash".
-                value: _cashAccounts.any((a) => a.id == _cashAssetId)
+                initialValue: _cashAccounts.any((a) => a.id == _cashAssetId)
                     ? _cashAssetId
                     : null,
                 decoration: InputDecoration(

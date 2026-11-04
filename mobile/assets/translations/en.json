@@ -332,7 +332,6 @@
       "cash_to": "Credited to cash account",
       "cash_none": "Don't move cash",
       "cash_no_account": "No cash account in {currency} — create one to move cash automatically.",
-      "oversell": "More than the {held} currently held",
       "withholding": "Tax withheld at source ({currency}) — optional",
       "withholding_helper": "Tax retained abroad on this dividend/coupon. Income is shown net of it.",
       "withholding_exceeds_gross": "Cannot exceed the gross amount",
