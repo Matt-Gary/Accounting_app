@@ -24,7 +24,8 @@ class BackendService {
     Future<http.Response> Function(Map<String, String>) fn, {
     bool json = false,
   }) async {
-    final response = await fn(_authHeaders(json: json));
+    final response =
+        await fn(_authHeaders(json: json)).timeout(_requestTimeout);
     if (response.statusCode != 401) return response;
 
     try {
@@ -33,19 +34,91 @@ class BackendService {
       return response;
     }
 
-    return fn(_authHeaders(json: json));
+    return fn(_authHeaders(json: json)).timeout(_requestTimeout);
   }
+
+  // Without a limit a dead connection left the screen on a spinner forever.
+  // Generous on purpose: a forced portfolio refresh waits on Yahoo.
+  static const _requestTimeout = Duration(seconds: 45);
 
   static final Map<String, DashboardData> _dashboardCache = {};
   static final Map<String, DateTime> _dashboardCacheTime = {};
   static const _dashboardHardTtl = Duration(minutes: 2);
 
-  static bool hasDashboardCache(int month, int year) =>
-      _dashboardCache.containsKey('${month}_$year');
+  // Must build the same key getDashboard() stores under. It used to omit the
+  // closing-day part, so it never matched and every load showed a spinner.
+  static bool hasDashboardCache(int month, int year, {int? closingDay}) =>
+      _dashboardCache.containsKey('${month}_${year}_${closingDay ?? 0}');
 
   static void clearDashboardCache() {
     _dashboardCache.clear();
     _dashboardCacheTime.clear();
+  }
+
+  // ── Dashboard kept on the device ───────────────────────────────────────────
+  // The last answer for a month is written to the app's cache folder, so a cold
+  // start can draw the screen at once instead of a spinner. It is only ever a
+  // placeholder while the real request is in flight - never the final answer:
+  // the caller must still call getDashboard() and replace it.
+
+  static const _storedDashboardLimit = 6;
+
+  static Future<Directory> _storedDashboardDir() async {
+    final base = await getApplicationCacheDirectory();
+    return Directory('${base.path}/dashboards');
+  }
+
+  /// The file name carries the user id, so one account can never be shown
+  /// another account's month. Null when nobody is signed in.
+  static String? _storedDashboardName(int month, int year) {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return null;
+    return '${userId}_${year}_$month.json';
+  }
+
+  /// The month as it looked the last time it was fetched on this device, or
+  /// null (never fetched, signed out, unreadable file - all the same to the UI).
+  Future<DashboardData?> getStoredDashboard({
+    required int month,
+    required int year,
+  }) async {
+    try {
+      final name = _storedDashboardName(month, year);
+      if (name == null) return null;
+      final file = File('${(await _storedDashboardDir()).path}/$name');
+      if (!await file.exists()) return null;
+      return DashboardData.fromJson(jsonDecode(await file.readAsString()));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Best effort: a failed write only costs the next start its head start.
+  static Future<void> _storeDashboard(int month, int year, String body) async {
+    try {
+      final name = _storedDashboardName(month, year);
+      if (name == null) return;
+      final dir = await _storedDashboardDir();
+      await dir.create(recursive: true);
+      await File('${dir.path}/$name').writeAsString(body, flush: true);
+
+      // Browsing back through the years must not fill the phone: keep only
+      // the most recently fetched months.
+      final files = dir.listSync().whereType<File>().toList()
+        ..sort((a, b) =>
+            b.statSync().modified.compareTo(a.statSync().modified));
+      for (final old in files.skip(_storedDashboardLimit)) {
+        old.deleteSync();
+      }
+    } catch (_) {}
+  }
+
+  /// Removes every stored month. Called when the signed-in account changes.
+  static Future<void> clearStoredDashboards() async {
+    try {
+      final dir = await _storedDashboardDir();
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (_) {}
   }
 
   Future<DashboardData> getDashboard({
@@ -53,6 +126,9 @@ class BackendService {
     required int year,
     String? userId,
     int? closingDay,
+    // An explicit refresh must reach the server: within the TTL the cache
+    // would otherwise hand back the same data and the button did nothing.
+    bool forceRefresh = false,
     void Function(DashboardData)? onRefresh,
   }) async {
     final cacheKey = '${month}_${year}_${closingDay ?? 0}';
@@ -74,13 +150,18 @@ class BackendService {
         final data = DashboardData.fromJson(jsonDecode(response.body));
         _dashboardCache[cacheKey] = data;
         _dashboardCacheTime[cacheKey] = DateTime.now();
+        // Only the plain family view is kept: it is the one the home screen
+        // opens with, and a filtered answer must not pose as the whole month.
+        if (userId == null && closingDay == null) {
+          _storeDashboard(month, year, response.body);
+        }
         return data;
       } else {
         throw Exception('Failed to load dashboard: ${response.body}');
       }
     }
 
-    if (cached != null && cacheTime != null) {
+    if (!forceRefresh && cached != null && cacheTime != null) {
       final age = now.difference(cacheTime);
       if (age < _dashboardHardTtl) {
         return cached;

@@ -2,6 +2,8 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../utils/error_text.dart';
+import '../utils/money_format.dart';
 import '../widgets/language_toggle.dart';
 
 /// Translates a category label — global categories use the categories.* JSON
@@ -28,6 +30,7 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
   List<UserProfile> _users = [];
   List<Category> _categories = [];
   List<PaymentMethod> _paymentMethods = [];
+  String? _currentProfileId;
 
   @override
   void initState() {
@@ -45,7 +48,9 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
       final rawRecurring = results[0] as List<Map<String, dynamic>>;
       final familyData = results[1] as FamilyData;
 
+      if (!mounted) return;
       setState(() {
+        _currentProfileId = familyData.currentProfileId;
         _recurringExpenses =
             rawRecurring.map((e) => RecurringExpense.fromJson(e)).toList();
         // Includes the family-level virtual profile ("General") so a shared bill
@@ -64,9 +69,18 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
         );
       }
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
+
+  String _money(double value) =>
+      formatMoney(value, expenseCurrency, context.locale.toString());
+
+  /// What the active definitions add to every month — the figure this screen
+  /// exists to answer, and it used to take adding the rows up by hand.
+  double get _activeMonthlyTotal => _recurringExpenses
+      .where((e) => e.active)
+      .fold(0.0, (total, e) => total + e.amount);
 
   Future<void> _deleteRecurring(RecurringExpense expense) async {
     final confirmed = await showDialog<bool>(
@@ -111,6 +125,7 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
         users: _users,
         categories: _categories,
         paymentMethods: _paymentMethods,
+        currentProfileId: _currentProfileId,
         onSave: _loadData,
       ),
     );
@@ -133,9 +148,23 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
           : _recurringExpenses.isEmpty
               ? Center(child: Text('recurring.empty'.tr()))
               : ListView.builder(
-                  itemCount: _recurringExpenses.length,
-                  itemBuilder: (ctx, i) {
-                    final item = _recurringExpenses[i];
+                  // Room for the FAB below the last row; row 0 is the total.
+                  padding: const EdgeInsets.only(bottom: 88),
+                  itemCount: _recurringExpenses.length + 1,
+                  itemBuilder: (ctx, index) {
+                    if (index == 0) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: Text(
+                          'recurring.monthly_total'.tr(namedArgs: {
+                            'amount': _money(_activeMonthlyTotal)
+                          }),
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                      );
+                    }
+                    final item = _recurringExpenses[index - 1];
                     final categoryObj = _categories.firstWhere(
                         (c) => c.key == item.categoryKey,
                         orElse: () => Category(
@@ -149,6 +178,9 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                                 UserProfile(id: '?', name: '?', email: ''))
                         .name;
                     return ListTile(
+                      // Tap the row to edit — three controls in the trailing
+                      // slot left too little room for the text.
+                      onTap: () => _showForm(item),
                       leading: CircleAvatar(
                         backgroundColor:
                             item.active ? Colors.blue : Colors.grey,
@@ -159,7 +191,7 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                       subtitle: Text('recurring.item_subtitle'.tr(
                           namedArgs: {
                             'user': user,
-                            'amount': item.amount.toStringAsFixed(2)
+                            'amount': _money(item.amount)
                           })),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -186,10 +218,6 @@ class _RecurringExpensesScreenState extends State<RecurringExpensesScreen> {
                             },
                           ),
                           IconButton(
-                            icon: const Icon(Icons.edit),
-                            onPressed: () => _showForm(item),
-                          ),
-                          IconButton(
                             icon: const Icon(Icons.delete, color: Colors.red),
                             onPressed: () => _deleteRecurring(item),
                           ),
@@ -207,6 +235,7 @@ class RecurringForm extends StatefulWidget {
   final List<UserProfile> users;
   final List<Category> categories;
   final List<PaymentMethod> paymentMethods;
+  final String? currentProfileId;
   final VoidCallback onSave;
 
   const RecurringForm({
@@ -215,6 +244,7 @@ class RecurringForm extends StatefulWidget {
     required this.users,
     required this.categories,
     required this.paymentMethods,
+    this.currentProfileId,
     required this.onSave,
   });
 
@@ -237,7 +267,14 @@ class _RecurringFormState extends State<RecurringForm> {
   @override
   void initState() {
     super.initState();
-    if (widget.users.isNotEmpty) _selectedUser = widget.users.first;
+    if (widget.users.isNotEmpty) {
+      // A new definition defaults to whoever is logged in, not to the first
+      // name in the alphabet.
+      _selectedUser = widget.users.firstWhere(
+        (u) => u.id == widget.currentProfileId,
+        orElse: () => widget.users.first,
+      );
+    }
     if (widget.categories.isNotEmpty) {
       _selectedCategory = widget.categories.first;
     }
@@ -246,7 +283,7 @@ class _RecurringFormState extends State<RecurringForm> {
     }
 
     if (widget.expense != null) {
-      _amountController.text = widget.expense!.amount.toString();
+      _amountController.text = widget.expense!.amount.toStringAsFixed(2);
       _descController.text = widget.expense!.description ?? '';
       _dayController.text = widget.expense!.dayOfMonth.toString();
       if (widget.users.any((u) => u.id == widget.expense!.userId)) {
@@ -270,7 +307,7 @@ class _RecurringFormState extends State<RecurringForm> {
     setState(() => _isLoading = true);
 
     try {
-      final amount = double.parse(_amountController.text.replaceAll(',', '.'));
+      final amount = parseAmount(_amountController.text)!; // validated above
       final day = int.parse(_dayController.text);
 
       final expense = RecurringExpense(
@@ -301,10 +338,10 @@ class _RecurringFormState extends State<RecurringForm> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(
-                'recurring.error'.tr(namedArgs: {'error': e.toString()}))));
+                'recurring.error'.tr(namedArgs: {'error': errorText(e)}))));
       }
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -332,9 +369,9 @@ class _RecurringFormState extends State<RecurringForm> {
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
-                  labelText: 'recurring.amount'.tr(), prefixText: r'R$ '),
-              validator: (v) =>
-                  (v == null || v.isEmpty) ? 'common.required'.tr() : null,
+                  labelText: 'recurring.amount'.tr(),
+                  prefixText: '${currencySymbol(expenseCurrency)} '),
+              validator: validateAmount,
             ),
             const SizedBox(height: 10),
             TextFormField(

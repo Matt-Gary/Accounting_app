@@ -1,8 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:open_file/open_file.dart';
@@ -14,6 +12,8 @@ import 'expense_details_screen.dart';
 import 'recurring_expenses_screen.dart';
 import 'category_management_screen.dart';
 import '../utils/category_icons.dart';
+import '../utils/error_text.dart';
+import '../utils/money_format.dart';
 import 'family_invites_screen.dart';
 import '../widgets/language_toggle.dart';
 
@@ -26,41 +26,203 @@ class HomeScreen extends StatefulWidget {
 
 class HomeScreenState extends State<HomeScreen> {
   final _backendService = BackendService();
+  final _searchController = TextEditingController();
 
   DateTime _currentDate = DateTime.now();
-  bool _isLoading = false;
+  bool _isLoading = true;
+
+  /// A request is in flight while figures are already on screen - either the
+  /// previous ones or the copy kept on the device. Drawn as a thin bar, so
+  /// figures that may be about to change are never presented as settled.
+  bool _isRefreshing = false;
   DashboardData? _dashboardData;
   String _errorMessage = '';
   String? _selectedCategory;
   String? _selectedUser;
+  String _searchQuery = '';
   int? _closingDay;
   bool _showUserChart = true;
   bool _showCategoryChart = true;
   Map<String, String> _categoryKeyByLabel = {};
 
+  /// Bumped on every load. A response is applied only if it still belongs to
+  /// the latest request — otherwise tapping "next month" twice could leave the
+  /// slower first answer on screen under the second month's title.
+  int _loadSeq = 0;
+
   @override
   void initState() {
     super.initState();
-    _loadClosingDay();
+    _load();
   }
 
-  Future<void> _loadClosingDay() async {
-    try {
-      final override = await _backendService.getClosingDayOverride(
-        _currentDate.month,
-        _currentDate.year,
-      );
-      setState(() {
-        _closingDay = override;
-      });
-    } catch (e) {
-      // No override found or error, use default
-      setState(() {
-        _closingDay = null;
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  String _money(double value) =>
+      formatMoney(value, expenseCurrency, context.locale.toString());
+
+  // ── Loading ────────────────────────────────────────────────────────────────
+
+  Future<void> _load({bool force = false}) async {
+    final seq = ++_loadSeq;
+    final month = _currentDate.month;
+    final year = _currentDate.year;
+
+    setState(() {
+      _errorMessage = '';
+      // Full-screen spinner only when there is nothing to show yet; a refresh
+      // keeps the current figures on screen until the new ones arrive.
+      _isLoading = _dashboardData == null;
+      _isRefreshing = true;
+    });
+
+    // Display only: the backend applies the stored override itself, so the
+    // dashboard request does not wait for this one.
+    _backendService.getClosingDayOverride(month, year).then((value) {
+      if (mounted && seq == _loadSeq) setState(() => _closingDay = value);
+    }).catchError((_) {});
+
+    // Nothing to show yet (cold start, or a month not opened in this session):
+    // draw the month as this device last saw it while the request below runs.
+    // Not awaited - the request must not wait for the disk - and it never
+    // overwrites an answer that got here first.
+    if (_dashboardData == null &&
+        !BackendService.hasDashboardCache(month, year)) {
+      _backendService
+          .getStoredDashboard(month: month, year: year)
+          .then((stored) {
+        if (stored == null || !mounted || seq != _loadSeq) return;
+        if (_dashboardData != null) return;
+        _applyData(stored);
+        setState(() => _isLoading = false);
       });
     }
-    _loadDashboard();
+
+    try {
+      final data = await _backendService.getDashboard(
+        month: month,
+        year: year,
+        forceRefresh: force,
+        onRefresh: (refreshed) {
+          if (mounted && seq == _loadSeq) _applyData(refreshed);
+        },
+      );
+      if (!mounted || seq != _loadSeq) return;
+      _applyData(data);
+    } catch (e) {
+      if (!mounted || seq != _loadSeq) return;
+      setState(() => _errorMessage = errorText(e));
+    } finally {
+      if (mounted && seq == _loadSeq) {
+        setState(() {
+          _isLoading = false;
+          _isRefreshing = false;
+        });
+      }
+    }
   }
+
+  void _applyData(DashboardData data) {
+    setState(() {
+      _dashboardData = data;
+      _categoryKeyByLabel = {
+        for (final e in data.expenses)
+          if (e['category_label'] != null && e['category_key'] != null)
+            e['category_label'] as String: e['category_key'] as String
+      };
+    });
+  }
+
+  /// After a write: other months can be affected too (installments, recurring
+  /// definitions), so every cached month is dropped, not just this one.
+  Future<void> _reloadAfterMutation() {
+    BackendService.clearDashboardCache();
+    return _load();
+  }
+
+  void _changeMonth(int months) {
+    setState(() {
+      _currentDate =
+          DateTime(_currentDate.year, _currentDate.month + months, 1);
+      // Filters describe the month they were set in; carrying them over hid
+      // most of the next month for no visible reason.
+      _clearFilters();
+      _dashboardData = null;
+      _closingDay = null;
+    });
+    _load();
+  }
+
+  void _clearFilters() {
+    _selectedCategory = null;
+    _selectedUser = null;
+    _searchQuery = '';
+    _searchController.clear();
+  }
+
+  // ── Filtering ──────────────────────────────────────────────────────────────
+
+  bool get _hasFilters =>
+      _selectedCategory != null ||
+      _selectedUser != null ||
+      _searchQuery.trim().isNotEmpty;
+
+  String _translateCategoryLabel(String label) {
+    final key = _categoryKeyByLabel[label];
+    if (key == null) return label;
+    final translationKey = 'categories.$key';
+    final translated = translationKey.tr();
+    // If easy_localization returns the key unchanged, the key isn't in the JSON
+    return translated == translationKey ? label : translated;
+  }
+
+  /// Expenses passing the active filters. Each breakdown card leaves its own
+  /// dimension out ([byCategory] / [byUser] false), so picking one category
+  /// still shows the other categories to switch to.
+  List<dynamic> _expensesWhere({bool byCategory = true, bool byUser = true}) {
+    final data = _dashboardData;
+    if (data == null) return const [];
+    final query = _searchQuery.trim().toLowerCase();
+    return data.expenses.where((e) {
+      if (byCategory &&
+          _selectedCategory != null &&
+          e['category_label'] != _selectedCategory) {
+        return false;
+      }
+      if (byUser && _selectedUser != null && e['user_name'] != _selectedUser) {
+        return false;
+      }
+      if (query.isNotEmpty) {
+        final label = e['category_label'] as String?;
+        final haystack = [
+          e['comment'],
+          if (label != null) _translateCategoryLabel(label),
+          e['user_name'],
+          e['payment_method_name'],
+        ].whereType<String>().join(' ').toLowerCase();
+        if (!haystack.contains(query)) return false;
+      }
+      return true;
+    }).toList();
+  }
+
+  double _sum(Iterable<dynamic> expenses) => expenses.fold(
+      0.0, (total, e) => total + (e['amount'] as num).toDouble());
+
+  Map<String, double> _breakdown(Iterable<dynamic> expenses, String field) {
+    final result = <String, double>{};
+    for (final e in expenses) {
+      final key = (e[field] as String?) ?? 'common.unknown'.tr();
+      result[key] = (result[key] ?? 0) + (e['amount'] as num).toDouble();
+    }
+    return result;
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────
 
   Future<void> _checkForUpdate() async {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -169,113 +331,82 @@ class HomeScreenState extends State<HomeScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text(
-                  'update.failed'.tr(namedArgs: {'error': e.toString()})),
+                  'update.failed'.tr(namedArgs: {'error': errorText(e)})),
               backgroundColor: Colors.red),
         );
       }
     }
   }
 
-  Future<void> _loadDashboard() async {
-    final hasCached =
-        BackendService.hasDashboardCache(_currentDate.month, _currentDate.year);
-
-    if (!hasCached) {
-      setState(() {
-        _isLoading = true;
-        _errorMessage = '';
-      });
-    }
-
+  Future<void> _downloadReport() async {
     try {
-      final data = await _backendService.getDashboard(
-        month: _currentDate.month,
-        year: _currentDate.year,
-        closingDay: _closingDay,
-        onRefresh: (refreshed) {
-          if (mounted) {
-            setState(() {
-            _dashboardData = refreshed;
-            _buildCategoryMap();
-          });
-          }
-        },
-      );
+      await _backendService.downloadReport(
+          _currentDate.month, _currentDate.year);
       if (mounted) {
-        setState(() {
-        _dashboardData = data;
-        _buildCategoryMap();
-      });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('home.opening_report'.tr())),
+        );
       }
     } catch (e) {
-      if (mounted) setState(() => _errorMessage = e.toString());
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'home.report_failed'.tr(namedArgs: {'error': errorText(e)})),
+              backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
-  Future<void> _reloadAfterMutation() {
-    BackendService.clearDashboardCache();
-    return _loadDashboard();
+  /// Sign-out sits in a menu next to everyday actions, so it asks first.
+  Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('home.sign_out_confirm_title'.tr()),
+        content: Text('home.sign_out_confirm_body'.tr()),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('common.cancel'.tr()),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('home.sign_out_tooltip'.tr(),
+                style: const TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('remember_me');
+    await Supabase.instance.client.auth.signOut();
   }
 
-  void _changeMonth(int months) {
-    setState(() {
-      _currentDate =
-          DateTime(_currentDate.year, _currentDate.month + months, 1);
-      _selectedCategory = null; // Reset filter when changing month
-    });
-    _loadClosingDay(); // Reload closing day for the new month
+  Future<void> _openScreen(Widget screen, {bool reload = false}) async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+    if (reload && mounted) _reloadAfterMutation();
   }
 
-  List<String> _getUniqueCategories() {
-    if (_dashboardData == null) return [];
-    final categories = _dashboardData!.expenses
-        .map((e) => e['category_label'] as String)
-        .toSet()
-        .toList();
-    categories.sort();
-    return categories;
-  }
-
-  void _buildCategoryMap() {
-    if (_dashboardData == null) {
-      _categoryKeyByLabel = {};
-      return;
+  void _onMenuSelected(String action) {
+    switch (action) {
+      case 'report':
+        _downloadReport();
+      case 'closing':
+        _showClosingDayPicker();
+      case 'recurring':
+        _openScreen(const RecurringExpensesScreen(), reload: true);
+      case 'categories':
+        _openScreen(const CategoryManagementScreen(), reload: true);
+      case 'invites':
+        _openScreen(const FamilyInvitesScreen());
+      case 'update':
+        _checkForUpdate();
+      case 'signout':
+        _signOut();
     }
-    _categoryKeyByLabel = {
-      for (final e in _dashboardData!.expenses)
-        if (e['category_label'] != null && e['category_key'] != null)
-          e['category_label'] as String: e['category_key'] as String
-    };
-  }
-
-  String _translateCategoryLabel(String label) {
-    final key = _categoryKeyByLabel[label];
-    if (key == null) return label;
-    final translationKey = 'categories.$key';
-    final translated = translationKey.tr();
-    // If easy_localization returns the key unchanged, the key isn't in the JSON
-    return translated == translationKey ? label : translated;
-  }
-
-  List<dynamic> _getFilteredExpenses() {
-    if (_dashboardData == null) return [];
-    Iterable<dynamic> filtered = _dashboardData!.expenses;
-    if (_selectedCategory != null) {
-      filtered =
-          filtered.where((e) => e['category_label'] == _selectedCategory);
-    }
-    if (_selectedUser != null) {
-      filtered = filtered.where((e) => e['user_name'] == _selectedUser);
-    }
-    final list = filtered.toList()
-      ..sort((a, b) {
-        final dateA = DateTime.parse(a['spent_at']);
-        final dateB = DateTime.parse(b['spent_at']);
-        return dateB.compareTo(dateA);
-      });
-    return list;
   }
 
   void _showClosingDayPicker() {
@@ -291,7 +422,8 @@ class HomeScreenState extends State<HomeScreen> {
             children: [
               Text(
                 'closing_day.title'.tr(),
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 10),
               Expanded(
@@ -300,57 +432,19 @@ class HomeScreenState extends State<HomeScreen> {
                   itemBuilder: (context, index) {
                     final day = index + 1;
                     return ListTile(
-                      title: Text(
-                          'closing_day.day'.tr(namedArgs: {'day': day.toString()})),
+                      title: Text('closing_day.day'
+                          .tr(namedArgs: {'day': day.toString()})),
                       selected: _closingDay == day,
                       trailing: _closingDay == day
                           ? const Icon(Icons.check, color: Colors.blue)
                           : null,
-                      onTap: () async {
-                        try {
-                          await _backendService.setClosingDayOverride(
-                            _currentDate.month,
-                            _currentDate.year,
-                            day,
-                          );
-                          setState(() {
-                            _closingDay = day;
-                          });
-                          if (ctx.mounted) Navigator.pop(ctx);
-                          _reloadAfterMutation();
-                        } catch (e) {
-                          if (ctx.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('common.error_with_message'
-                                  .tr(namedArgs: {'error': e.toString()}))),
-                            );
-                          }
-                        }
-                      },
+                      onTap: () => _saveClosingDay(ctx, day),
                     );
                   },
                 ),
               ),
               TextButton(
-                onPressed: () async {
-                  try {
-                    await _backendService.deleteClosingDayOverride(
-                      _currentDate.month,
-                      _currentDate.year,
-                    );
-                    setState(() {
-                      _closingDay = null; // Reset to default
-                    });
-                    if (ctx.mounted) Navigator.pop(ctx);
-                    _reloadAfterMutation();
-                  } catch (e) {
-                    if (ctx.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error: $e')),
-                      );
-                    }
-                  }
-                },
+                onPressed: () => _saveClosingDay(ctx, null),
                 child: Text('closing_day.reset'.tr()),
               ),
             ],
@@ -360,21 +454,28 @@ class HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  double _getFilteredTotalSpent() {
-    final filtered = _getFilteredExpenses();
-    return filtered.fold(
-        0.0, (sum, e) => sum + (e['amount'] as num).toDouble());
-  }
-
-  Map<String, double> _getFilteredUserBreakdown() {
-    final filtered = _getFilteredExpenses();
-    final breakdown = <String, double>{};
-    for (var exp in filtered) {
-      final user = exp['user_name'] as String;
-      final amount = (exp['amount'] as num).toDouble();
-      breakdown[user] = (breakdown[user] ?? 0) + amount;
+  /// Stores [day] as this month's override; null removes the override.
+  Future<void> _saveClosingDay(BuildContext sheetContext, int? day) async {
+    try {
+      if (day == null) {
+        await _backendService.deleteClosingDayOverride(
+            _currentDate.month, _currentDate.year);
+      } else {
+        await _backendService.setClosingDayOverride(
+            _currentDate.month, _currentDate.year, day);
+      }
+      if (!mounted) return;
+      setState(() => _closingDay = day);
+      if (sheetContext.mounted) Navigator.pop(sheetContext);
+      _reloadAfterMutation();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('common.error_with_message'
+                .tr(namedArgs: {'error': errorText(e)}))),
+      );
     }
-    return breakdown;
   }
 
   Future<void> _deleteExpense(Map<String, dynamic> expense) async {
@@ -446,387 +547,13 @@ class HomeScreenState extends State<HomeScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('common.error_with_message'
-                .tr(namedArgs: {'error': e.toString()}))),
+            SnackBar(
+                content: Text('common.error_with_message'
+                    .tr(namedArgs: {'error': errorText(e)}))),
           );
         }
       }
     }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        title: Text('home.app_title'.tr(),
-            style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        actions: [
-          const LanguageToggle(),
-          IconButton(
-            icon: const Icon(Icons.system_update_alt, color: Colors.black),
-            tooltip: 'home.check_updates_tooltip'.tr(),
-            onPressed: _checkForUpdate,
-          ),
-          IconButton(
-            icon: const Icon(Icons.category_outlined, color: Colors.black),
-            tooltip: 'home.manage_categories_tooltip'.tr(),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                  builder: (_) => const CategoryManagementScreen()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.group_add_outlined, color: Colors.black),
-            tooltip: 'home.family_invites_tooltip'.tr(),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const FamilyInvitesScreen()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.black),
-            tooltip: 'home.sign_out_tooltip'.tr(),
-            onPressed: () async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('remember_me');
-              await Supabase.instance.client.auth.signOut();
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.black),
-            onPressed: _loadDashboard,
-          ),
-          IconButton(
-            icon: const Icon(Icons.download, color: Colors.black),
-            onPressed: () async {
-              try {
-                await _backendService.downloadReport(
-                    _currentDate.month, _currentDate.year);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('home.opening_report'.tr())),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                        content: Text('home.report_failed'
-                            .tr(namedArgs: {'error': e.toString()})),
-                        backgroundColor: Colors.red),
-                  );
-                }
-              }
-            },
-          ),
-          IconButton(
-            icon: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.calendar_today, color: Colors.black, size: 20),
-                Text(
-                  '${_closingDay ?? 23}',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Colors.black,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-            onPressed: _showClosingDayPicker,
-            tooltip: 'home.set_closing_day_tooltip'.tr(),
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            // Month Selector
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                IconButton(
-                    icon: const Icon(Icons.arrow_back_ios),
-                    onPressed: () => _changeMonth(-1)),
-                Text(
-                  DateFormat('MMMM yyyy').format(_currentDate),
-                  style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-                IconButton(
-                    icon: const Icon(Icons.arrow_forward_ios),
-                    onPressed: () => _changeMonth(1)),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            if (_isLoading)
-              const SizedBox(
-                  height: 200,
-                  child: Center(child: CircularProgressIndicator()))
-            else if (_errorMessage.isNotEmpty)
-              Center(
-                  child: Text('Error: $_errorMessage',
-                      style: const TextStyle(color: Colors.red)))
-            else if (_dashboardData != null) ...[
-              // Category Filter
-              if (_dashboardData!.categoryBreakdown.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 20),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        FilterChip(
-                          label: Text('common.all'.tr()),
-                          selected: _selectedCategory == null,
-                          onSelected: (selected) {
-                            setState(() => _selectedCategory = null);
-                          },
-                          selectedColor: Colors.black,
-                          labelStyle: TextStyle(
-                            color: _selectedCategory == null
-                                ? Colors.white
-                                : Colors.black,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        ..._getUniqueCategories().map((cat) {
-                          final isSelected = _selectedCategory == cat;
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: FilterChip(
-                              label: Text(_translateCategoryLabel(cat)),
-                              selected: isSelected,
-                              onSelected: (selected) {
-                                setState(() =>
-                                    _selectedCategory = selected ? cat : null);
-                              },
-                              selectedColor: Colors.black,
-                              labelStyle: TextStyle(
-                                color: isSelected ? Colors.white : Colors.black,
-                              ),
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                ),
-
-              // Total Spent Card
-              _buildTotalCard(),
-
-              const SizedBox(height: 20),
-
-              // User Breakdown
-              if (_dashboardData!.userSpendBreakdown.isNotEmpty)
-                _buildUserSpendChart(),
-
-              if (_dashboardData!.userEarnedBreakdown.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12)),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('home.income_by_user'.tr(),
-                          style: const TextStyle(fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 10),
-                      ..._dashboardData!.userEarnedBreakdown.entries.map((e) {
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(e.key),
-                              Text('R\$ ${e.value.toStringAsFixed(2)}',
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.green)),
-                            ],
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
-                ),
-              ],
-
-              const SizedBox(height: 20),
-
-              // Category Chart
-              if (_dashboardData!.categoryBreakdown.isNotEmpty)
-                _buildCategoryChart()
-              else
-                SizedBox(
-                    height: 100,
-                    child: Center(child: Text('home.no_expenses_this_month'.tr()))),
-
-              const SizedBox(height: 20),
-
-              if (_dashboardData!.earnings.isNotEmpty) ...[
-                ExpansionTile(
-                  title: Text('home.recent_earnings'.tr(),
-                      style:
-                          const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  children: _dashboardData!.earnings.map((earning) {
-                    return ListTile(
-                      leading: const CircleAvatar(
-                        backgroundColor: Colors.green,
-                        child: Icon(Icons.attach_money, color: Colors.white),
-                      ),
-                      title: Text(earning.userName ?? 'common.unknown'.tr()),
-                      subtitle: earning.description != null &&
-                              earning.description!.isNotEmpty
-                          ? Text(earning.description!)
-                          : null,
-                      trailing: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            DateFormat('dd/MM').format(earning.earnedAt),
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.grey),
-                          ),
-                          Text(
-                            'R\$ ${earning.amount.toStringAsFixed(2)}',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.green),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 20),
-              ],
-
-              // Recent Expenses List (from raw expenses)
-              Text('home.recent_expenses'.tr(),
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 10),
-
-              if (_selectedUser != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: InputChip(
-                      avatar: const Icon(Icons.person, size: 16),
-                      label: Text('home.filtered_by'
-                          .tr(namedArgs: {'name': _selectedUser ?? ''})),
-                      onDeleted: () => setState(() => _selectedUser = null),
-                      deleteIcon: const Icon(Icons.close, size: 16),
-                    ),
-                  ),
-                ),
-
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _getFilteredExpenses().length,
-                itemBuilder: (context, index) {
-                  final exp = _getFilteredExpenses()[index];
-                  final isRecurring = exp['recurring_id'] != null;
-                  const recurringColor = Color(0xFFE65100);
-                  return Card(
-                    elevation: 0,
-                    margin: const EdgeInsets.only(bottom: 8),
-                    clipBehavior: Clip.antiAlias,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    child: Container(
-                      decoration: isRecurring
-                          ? const BoxDecoration(
-                              border: Border(
-                                left:
-                                    BorderSide(color: recurringColor, width: 4),
-                              ),
-                            )
-                          : null,
-                      child: ListTile(
-                        onTap: () async {
-                          final result = await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    ExpenseDetailsScreen(expense: exp)),
-                          );
-                          if (result == true) {
-                            _reloadAfterMutation(); // Reload if expense was deleted
-                          }
-                        },
-                        onLongPress: () => _deleteExpense(exp),
-                        leading: CircleAvatar(
-                          backgroundColor: Colors.blue[50],
-                          child: Icon(
-                              categoryIcon(exp['category_key'] as String?),
-                              color: Colors.blue,
-                              size: 20),
-                        ),
-                        title: Row(
-                          children: [
-                            Flexible(child: Text(_translateCategoryLabel(exp['category_label'] as String))),
-                            if (isRecurring) ...[
-                              const SizedBox(width: 6),
-                              const Icon(Icons.repeat,
-                                  size: 14, color: recurringColor),
-                            ],
-                          ],
-                        ),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                                '${exp['user_name']} • ${exp['payment_method_name']}'),
-                            if (exp['comment'] != null &&
-                                exp['comment'].isNotEmpty)
-                              Text('"${exp['comment']}"',
-                                  style: const TextStyle(
-                                      fontStyle: FontStyle.italic,
-                                      fontSize: 12)),
-                          ],
-                        ),
-                        trailing: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              DateFormat('dd/MM')
-                                  .format(DateTime.parse(exp['spent_at'])),
-                              style: const TextStyle(
-                                  fontSize: 12, color: Colors.grey),
-                            ),
-                            Text(
-                              'R\$ ${(exp['amount'] as num).toDouble().toStringAsFixed(2)}',
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
   }
 
   void showAddOptions() {
@@ -844,38 +571,25 @@ class HomeScreenState extends State<HomeScreen> {
               ListTile(
                 leading: const Icon(Icons.money_off, color: Colors.red),
                 title: Text('add_options.expense'.tr()),
-                onTap: () async {
+                onTap: () {
                   Navigator.pop(ctx);
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AddExpenseScreen()),
-                  );
-                  _reloadAfterMutation();
+                  _openScreen(const AddExpenseScreen(), reload: true);
                 },
               ),
               ListTile(
                 leading: const Icon(Icons.attach_money, color: Colors.green),
                 title: Text('add_options.income'.tr()),
-                onTap: () async {
+                onTap: () {
                   Navigator.pop(ctx);
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AddEarningScreen()),
-                  );
-                  _reloadAfterMutation();
+                  _openScreen(const AddEarningScreen(), reload: true);
                 },
               ),
               ListTile(
                 leading: const Icon(Icons.repeat, color: Colors.blue),
                 title: Text('add_options.recurring'.tr()),
-                onTap: () async {
+                onTap: () {
                   Navigator.pop(ctx);
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const RecurringExpensesScreen()),
-                  );
-                  _reloadAfterMutation();
+                  _openScreen(const RecurringExpensesScreen(), reload: true);
                 },
               ),
             ],
@@ -885,8 +599,230 @@ class HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildTotalCard() {
-    final balance = _dashboardData!.totalEarned - _dashboardData!.totalSpent;
+  // ── Build ──────────────────────────────────────────────────────────────────
+
+  PopupMenuItem<String> _menuItem(String value, IconData icon, String label) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: Colors.black87),
+          const SizedBox(width: 12),
+          Flexible(child: Text(label)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
+    return Scaffold(
+      backgroundColor: Colors.grey[50],
+      appBar: AppBar(
+        title: Text('home.app_title'.tr(),
+            style: const TextStyle(
+                color: Colors.black, fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        actions: [
+          const LanguageToggle(),
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.black),
+            tooltip: 'home.refresh_tooltip'.tr(),
+            onPressed: () => _load(force: true),
+          ),
+          // Everything that is not a several-times-a-day action lives here;
+          // eight icons in a row left no room for the title on a phone.
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.black),
+            onSelected: _onMenuSelected,
+            itemBuilder: (_) => <PopupMenuEntry<String>>[
+              _menuItem('report', Icons.download, 'home.menu_report'.tr()),
+              _menuItem(
+                'closing',
+                Icons.calendar_today,
+                _closingDay == null
+                    ? 'home.menu_closing_day_default'.tr()
+                    : 'home.menu_closing_day'
+                        .tr(namedArgs: {'day': '$_closingDay'}),
+              ),
+              _menuItem('recurring', Icons.repeat, 'home.menu_recurring'.tr()),
+              _menuItem('categories', Icons.category_outlined,
+                  'home.manage_categories_tooltip'.tr()),
+              _menuItem('invites', Icons.group_add_outlined,
+                  'home.family_invites_tooltip'.tr()),
+              _menuItem('update', Icons.system_update_alt,
+                  'home.check_updates_tooltip'.tr()),
+              const PopupMenuDivider(),
+              _menuItem('signout', Icons.logout, 'home.sign_out_tooltip'.tr()),
+            ],
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        // Distinct tag: the Investments tab has its own FAB in the same route.
+        heroTag: 'home_fab',
+        onPressed: showAddOptions,
+        tooltip: 'home.add_tooltip'.tr(),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        child: const Icon(Icons.add),
+      ),
+      body: RefreshIndicator(
+        onRefresh: () => _load(force: true),
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          // Bottom room so the FAB never covers the last expense.
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+          child: Column(
+            children: [
+              _buildMonthSelector(),
+              // Fixed-height slot: the figures below must not jump when the
+              // bar appears or goes away.
+              SizedBox(
+                height: 20,
+                child: _isRefreshing && _dashboardData != null
+                    ? const Center(
+                        child: LinearProgressIndicator(minHeight: 2))
+                    : null,
+              ),
+              if (_isLoading)
+                const SizedBox(
+                    height: 200,
+                    child: Center(child: CircularProgressIndicator()))
+              else if (_dashboardData == null)
+                _buildError()
+              else
+                ..._buildDashboard(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMonthSelector() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        IconButton(
+            icon: const Icon(Icons.arrow_back_ios),
+            onPressed: () => _changeMonth(-1)),
+        Text(
+          DateFormat('MMMM yyyy').format(_currentDate),
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        IconButton(
+            icon: const Icon(Icons.arrow_forward_ios),
+            onPressed: () => _changeMonth(1)),
+      ],
+    );
+  }
+
+  Widget _buildError() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 32),
+      child: Column(
+        children: [
+          const Icon(Icons.cloud_off, size: 40, color: Colors.grey),
+          const SizedBox(height: 12),
+          Text('home.load_failed'.tr(),
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          if (_errorMessage.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(_errorMessage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey)),
+          ],
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () => _load(force: true),
+            child: Text('common.retry'.tr()),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildDashboard() {
+    final data = _dashboardData!;
+    final filtered = _expensesWhere()
+      ..sort((a, b) => DateTime.parse(b['spent_at'])
+          .compareTo(DateTime.parse(a['spent_at'])));
+    final userBreakdown = _breakdown(_expensesWhere(byUser: false), 'user_name');
+    final categoryBreakdown =
+        _breakdown(_expensesWhere(byCategory: false), 'category_label');
+
+    return [
+      // A refresh that failed while older figures are still on screen.
+      if (_errorMessage.isNotEmpty) ...[
+        Text(_errorMessage,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.red, fontSize: 12)),
+        const SizedBox(height: 12),
+      ],
+      _buildTotalCard(data, _sum(filtered)),
+      if (_hasFilters) ...[
+        const SizedBox(height: 12),
+        _buildActiveFilters(),
+      ],
+      const SizedBox(height: 20),
+      if (userBreakdown.isNotEmpty) ...[
+        _buildBreakdownCard(
+          title: 'home.spending_by_person'.tr(),
+          breakdown: userBreakdown,
+          selected: _selectedUser,
+          expanded: _showUserChart,
+          onToggle: () => setState(() => _showUserChart = !_showUserChart),
+          onSelect: (name) => setState(() => _selectedUser = name),
+          labelOf: (name) => name,
+          leadingOf: (name, color) => Text(
+            name.isEmpty ? '?' : name[0].toUpperCase(),
+            style: TextStyle(
+                color: color, fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+        ),
+        const SizedBox(height: 20),
+      ],
+      if (data.userEarnedBreakdown.isNotEmpty) ...[
+        _buildIncomeCard(data),
+        const SizedBox(height: 20),
+      ],
+      if (categoryBreakdown.isNotEmpty)
+        _buildBreakdownCard(
+          title: 'home.expenses_by_category'.tr(),
+          breakdown: categoryBreakdown,
+          selected: _selectedCategory,
+          expanded: _showCategoryChart,
+          onToggle: () =>
+              setState(() => _showCategoryChart = !_showCategoryChart),
+          onSelect: (label) => setState(() => _selectedCategory = label),
+          labelOf: _translateCategoryLabel,
+          leadingOf: (label, color) => Icon(
+              categoryIcon(_categoryKeyByLabel[label]),
+              color: color,
+              size: 18),
+        )
+      else
+        SizedBox(
+            height: 100,
+            child: Center(child: Text('home.no_expenses_this_month'.tr()))),
+      const SizedBox(height: 20),
+      if (data.earnings.isNotEmpty) ...[
+        _buildEarningsTile(data),
+        const SizedBox(height: 20),
+      ],
+      if (data.expenses.isNotEmpty) ..._buildExpenseList(filtered),
+    ];
+  }
+
+  /// Balance, income and expense always describe the whole month, so the card
+  /// adds up. With a filter on, its total is an extra line — it used to
+  /// replace "Expense" while the balance stayed unfiltered.
+  Widget _buildTotalCard(DashboardData data, double filteredTotal) {
+    final balance = data.totalEarned - data.totalSpent;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
@@ -903,243 +839,86 @@ class HomeScreenState extends State<HomeScreen> {
       ),
       child: Column(
         children: [
-          Text('home.balance'.tr(), style: const TextStyle(color: Colors.white70)),
+          Text('home.balance'.tr(),
+              style: const TextStyle(color: Colors.white70)),
           const SizedBox(height: 5),
-          Text(
-            'R\$ ${balance.toStringAsFixed(2)}',
-            style: TextStyle(
-                color: balance >= 0 ? Colors.greenAccent : Colors.redAccent,
-                fontSize: 36,
-                fontWeight: FontWeight.bold),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              _money(balance),
+              style: TextStyle(
+                  color: balance >= 0 ? Colors.greenAccent : Colors.redAccent,
+                  fontSize: 36,
+                  fontWeight: FontWeight.bold),
+            ),
           ),
           const SizedBox(height: 20),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              Column(
-                children: [
-                  Text('home.income'.tr(), style: const TextStyle(color: Colors.white54)),
-                  const SizedBox(height: 4),
-                  Text(
-                    'R\$ ${_dashboardData!.totalEarned.toStringAsFixed(2)}',
-                    style: const TextStyle(
-                        color: Colors.green,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
+              _buildTotalColumn(
+                  'home.income'.tr(), data.totalEarned, Colors.green),
               Container(height: 30, width: 1, color: Colors.white24),
-              Column(
-                children: [
-                  Text('home.expense'.tr(),
-                      style: const TextStyle(color: Colors.white54)),
-                  const SizedBox(height: 4),
-                  Text(
-                    'R\$ ${_getFilteredTotalSpent().toStringAsFixed(2)}',
-                    style: const TextStyle(
-                        color: Colors.red,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
+              _buildTotalColumn(
+                  'home.expense'.tr(), data.totalSpent, Colors.red),
             ],
           ),
+          if (_hasFilters) ...[
+            const SizedBox(height: 16),
+            Text(
+              'home.filtered_total'
+                  .tr(namedArgs: {'amount': _money(filteredTotal)}),
+              style: const TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w600),
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Map<String, double> _getFilteredCategoryBreakdown() {
-    if (_selectedCategory == null) {
-      return _dashboardData!.categoryBreakdown;
-    }
-    final filtered = _getFilteredExpenses();
-    final Map<String, double> breakdown = {};
-    for (final e in filtered) {
-      final label = e['category_label'] as String? ?? 'Unknown';
-      final amount = (e['amount'] as num).toDouble();
-      breakdown[label] = (breakdown[label] ?? 0.0) + amount;
-    }
-    return breakdown;
+  Widget _buildTotalColumn(String label, double value, Color color) {
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(color: Colors.white54)),
+        const SizedBox(height: 4),
+        Text(
+          _money(value),
+          style: TextStyle(
+              color: color, fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
   }
 
-  static const List<Color> _personColors = [
-    Color(0xFF1565C0), // blue
-    Color(0xFFC62828), // red
-    Color(0xFF2E7D32), // green
-    Color(0xFF6A1B9A), // purple
-    Color(0xFFE65100), // orange
-    Color(0xFF00695C), // teal
-    Color(0xFFAD1457), // pink
-    Color(0xFF4527A0), // deep purple
-  ];
-
-  Widget _buildUserSpendChart() {
-    final breakdown = _getFilteredUserBreakdown();
-    if (breakdown.isEmpty) return const SizedBox.shrink();
-
-    final total = breakdown.values.fold(0.0, (a, b) => a + b);
-    final entries = breakdown.entries.where((e) => e.value > 0).toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-
-    final sections = entries.asMap().entries.map((e) {
-      final color = _personColors[e.key % _personColors.length];
-      return PieChartSectionData(
-        color: color,
-        value: e.value.value,
-        title: '',
-        radius: 60,
-      );
-    }).toList();
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  /// Every active filter in one place, each removable on its own.
+  Widget _buildActiveFilters() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          GestureDetector(
-            onTap: () => setState(() => _showUserChart = !_showUserChart),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('home.spending_by_person'.tr(),
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-                Icon(_showUserChart
-                    ? Icons.keyboard_arrow_up
-                    : Icons.keyboard_arrow_down),
-              ],
+          if (_selectedCategory != null)
+            InputChip(
+              avatar: const Icon(Icons.category_outlined, size: 16),
+              label: Text('home.category_filter'.tr(namedArgs: {
+                'name': _translateCategoryLabel(_selectedCategory!)
+              })),
+              onDeleted: () => setState(() => _selectedCategory = null),
             ),
+          if (_selectedUser != null)
+            InputChip(
+              avatar: const Icon(Icons.person, size: 16),
+              label: Text(
+                  'home.filtered_by'.tr(namedArgs: {'name': _selectedUser!})),
+              onDeleted: () => setState(() => _selectedUser = null),
+            ),
+          TextButton(
+            onPressed: () => setState(_clearFilters),
+            child: Text('home.clear_filters'.tr()),
           ),
-          if (_showUserChart) ...[
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 200,
-              child: PieChart(
-                PieChartData(
-                  sections: sections,
-                  centerSpaceRadius: 40,
-                  sectionsSpace: 2,
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              children: entries.asMap().entries.map((e) {
-                final color = _personColors[e.key % _personColors.length];
-                final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
-                return Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                        color: color,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${e.value.key}: ${pct.toStringAsFixed(1)}%',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ],
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 16),
-            const Divider(height: 1),
-            const SizedBox(height: 12),
-            ...entries.asMap().entries.map((e) {
-              final color = _personColors[e.key % _personColors.length];
-              final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
-              final userName = e.value.key;
-              final isSelected = _selectedUser == userName;
-              return InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: () => setState(() {
-                  _selectedUser = isSelected ? null : userName;
-                }),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                  decoration: isSelected
-                      ? BoxDecoration(
-                          color: color.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(8),
-                        )
-                      : null,
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 36,
-                        height: 36,
-                        decoration: BoxDecoration(
-                          color: color.withValues(alpha: 0.12),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Center(
-                          child: Text(
-                            userName[0].toUpperCase(),
-                            style: TextStyle(
-                              color: color,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              userName,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                            const SizedBox(height: 2),
-                            LinearProgressIndicator(
-                              value: total > 0 ? e.value.value / total : 0,
-                              backgroundColor: Colors.grey[200],
-                              color: color,
-                              minHeight: 4,
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            'R\$ ${e.value.value.toStringAsFixed(2)}',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          Text(
-                            '${pct.toStringAsFixed(1)}%',
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }),
-          ],
         ],
       ),
     );
@@ -1162,24 +941,23 @@ class HomeScreenState extends State<HomeScreen> {
     Color(0xFF37474F), // blue grey 800
   ];
 
-  Widget _buildCategoryChart() {
-    final breakdown = _getFilteredCategoryBreakdown();
-    if (breakdown.isEmpty) return const SizedBox.shrink();
-
+  /// A ranked list of bars with the amount and share on every row. Replaces
+  /// the pie charts: fourteen slices with a percent-only legend made it
+  /// impossible to read off what a category actually cost. Tapping a row
+  /// filters the dashboard by it; tapping it again clears the filter.
+  Widget _buildBreakdownCard({
+    required String title,
+    required Map<String, double> breakdown,
+    required String? selected,
+    required bool expanded,
+    required VoidCallback onToggle,
+    required ValueChanged<String?> onSelect,
+    required String Function(String) labelOf,
+    required Widget Function(String, Color) leadingOf,
+  }) {
     final total = breakdown.values.fold(0.0, (a, b) => a + b);
-    // Sort descending by value and remove zero entries
     final entries = breakdown.entries.where((e) => e.value > 0).toList()
       ..sort((a, b) => b.value.compareTo(a.value));
-
-    final sections = entries.asMap().entries.map((e) {
-      final color = _chartColors[e.key % _chartColors.length];
-      return PieChartSectionData(
-        color: color,
-        value: e.value.value,
-        title: '',
-        radius: 60,
-      );
-    }).toList();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1190,61 +968,327 @@ class HomeScreenState extends State<HomeScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          GestureDetector(
-            onTap: () =>
-                setState(() => _showCategoryChart = !_showCategoryChart),
+          InkWell(
+            onTap: onToggle,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('home.expenses_by_category'.tr(),
+                Text(title,
                     style: const TextStyle(fontWeight: FontWeight.bold)),
-                Icon(_showCategoryChart
+                Icon(expanded
                     ? Icons.keyboard_arrow_up
                     : Icons.keyboard_arrow_down),
               ],
             ),
           ),
-          if (_showCategoryChart) ...[
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 200,
-              child: PieChart(
-                PieChartData(
-                  sections: sections,
-                  centerSpaceRadius: 40,
-                  sectionsSpace: 2,
-                ),
+          if (expanded) ...[
+            const SizedBox(height: 12),
+            for (var i = 0; i < entries.length; i++)
+              _buildBreakdownRow(
+                name: entries[i].key,
+                label: labelOf(entries[i].key),
+                value: entries[i].value,
+                share: total > 0 ? entries[i].value / total : 0,
+                color: _chartColors[i % _chartColors.length],
+                isSelected: selected == entries[i].key,
+                onSelect: onSelect,
+                leadingOf: leadingOf,
               ),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              children: entries.asMap().entries.map((e) {
-                final color = _chartColors[e.key % _chartColors.length];
-                final pct = total > 0 ? (e.value.value / total * 100) : 0.0;
-                return Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                        color: color,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${e.value.key}: ${pct.toStringAsFixed(1)}%',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ],
-                );
-              }).toList(),
-            ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildBreakdownRow({
+    required String name,
+    required String label,
+    required double value,
+    required double share,
+    required Color color,
+    required bool isSelected,
+    required ValueChanged<String?> onSelect,
+    required Widget Function(String, Color) leadingOf,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => onSelect(isSelected ? null : name),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+        decoration: isSelected
+            ? BoxDecoration(
+                color: color.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: color.withValues(alpha: 0.5)),
+              )
+            : null,
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Center(child: leadingOf(name, color)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  LinearProgressIndicator(
+                    value: share,
+                    backgroundColor: Colors.grey[200],
+                    color: color,
+                    minHeight: 4,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(_money(value),
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('${(share * 100).toStringAsFixed(1)}%',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIncomeCard(DashboardData data) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: Colors.white, borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('home.income_by_user'.tr(),
+              style: const TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 10),
+          ...data.userEarnedBreakdown.entries.map((e) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(e.key),
+                  Text(_money(e.value),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, color: Colors.green)),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEarningsTile(DashboardData data) {
+    return ExpansionTile(
+      title: Text('home.recent_earnings'.tr(),
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      children: data.earnings.map((earning) {
+        return ListTile(
+          leading: const CircleAvatar(
+            backgroundColor: Colors.green,
+            child: Icon(Icons.attach_money, color: Colors.white),
+          ),
+          title: Text(earning.userName ?? 'common.unknown'.tr()),
+          subtitle:
+              earning.description != null && earning.description!.isNotEmpty
+                  ? Text(earning.description!)
+                  : null,
+          trailing: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                DateFormat('dd/MM').format(earning.earnedAt),
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              Text(
+                _money(earning.amount),
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold, color: Colors.green),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  /// The month's expenses, newest first, grouped by day with a daily total.
+  /// [filtered] is computed once per build by the caller — the list used to
+  /// re-filter and re-sort the whole month for every single row.
+  List<Widget> _buildExpenseList(List<dynamic> filtered) {
+    final byDay = <String, List<dynamic>>{};
+    for (final e in filtered) {
+      final day = (e['spent_at'] as String).substring(0, 10);
+      (byDay[day] ??= []).add(e);
+    }
+
+    return [
+      Align(
+        alignment: Alignment.centerLeft,
+        child: Text(
+            'home.expenses_title'
+                .tr(namedArgs: {'count': filtered.length.toString()}),
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      ),
+      const SizedBox(height: 10),
+      TextField(
+        controller: _searchController,
+        onChanged: (value) => setState(() => _searchQuery = value),
+        decoration: InputDecoration(
+          hintText: 'home.search_hint'.tr(),
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: _searchQuery.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => setState(() {
+                    _searchQuery = '';
+                    _searchController.clear();
+                  }),
+                ),
+          isDense: true,
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      if (filtered.isEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 32),
+          child: Text('home.no_results'.tr(),
+              style: const TextStyle(color: Colors.grey)),
+        ),
+      for (final entry in byDay.entries) ...[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                DateFormat('EEE, d MMM').format(DateTime.parse(entry.key)),
+                style: TextStyle(
+                    fontWeight: FontWeight.w600, color: Colors.grey[700]),
+              ),
+              Text(_money(_sum(entry.value)),
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600, color: Colors.grey[700])),
+            ],
+          ),
+        ),
+        for (final exp in entry.value) _buildExpenseTile(exp),
+      ],
+    ];
+  }
+
+  Widget _buildExpenseTile(dynamic exp) {
+    final isRecurring = exp['recurring_id'] != null;
+    const recurringColor = Color(0xFFE65100);
+    final comment = exp['comment'] as String?;
+
+    return Dismissible(
+      key: ValueKey(exp['id']),
+      direction: DismissDirection.endToStart,
+      // Never dismissed by the gesture itself: the row leaves when the reload
+      // after a confirmed delete no longer contains it.
+      confirmDismiss: (_) async {
+        await _deleteExpense(exp);
+        return false;
+      },
+      background: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.only(right: 20),
+        alignment: Alignment.centerRight,
+        decoration: BoxDecoration(
+          color: Colors.red,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Icon(Icons.delete, color: Colors.white),
+      ),
+      child: Card(
+        elevation: 0,
+        margin: const EdgeInsets.only(bottom: 8),
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: Container(
+          decoration: isRecurring
+              ? const BoxDecoration(
+                  border: Border(
+                    left: BorderSide(color: recurringColor, width: 4),
+                  ),
+                )
+              : null,
+          child: ListTile(
+            onTap: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => ExpenseDetailsScreen(expense: exp)),
+              );
+              // The details screen can also edit in place, so any return may
+              // carry a change — not only a delete.
+              if (result == true && mounted) _reloadAfterMutation();
+            },
+            onLongPress: () => _deleteExpense(exp),
+            leading: CircleAvatar(
+              backgroundColor: Colors.blue[50],
+              child: Icon(categoryIcon(exp['category_key'] as String?),
+                  color: Colors.blue, size: 20),
+            ),
+            title: Row(
+              children: [
+                Flexible(
+                    child: Text(_translateCategoryLabel(
+                        (exp['category_label'] as String?) ??
+                            'common.unknown'.tr()))),
+                if (isRecurring) ...[
+                  const SizedBox(width: 6),
+                  const Icon(Icons.repeat, size: 14, color: recurringColor),
+                ],
+              ],
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${exp['user_name']} • ${exp['payment_method_name']}'),
+                if (comment != null && comment.isNotEmpty)
+                  Text('"$comment"',
+                      style: const TextStyle(
+                          fontStyle: FontStyle.italic, fontSize: 12)),
+              ],
+            ),
+            trailing: Text(
+              _money((exp['amount'] as num).toDouble()),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+            ),
+          ),
+        ),
       ),
     );
   }

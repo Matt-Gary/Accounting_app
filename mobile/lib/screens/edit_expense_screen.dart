@@ -1,7 +1,9 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../utils/error_text.dart';
+import '../utils/money_format.dart';
 
 class EditExpenseScreen extends StatefulWidget {
   final Map<String, dynamic> expense;
@@ -23,6 +25,7 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
   final _commentController = TextEditingController();
   late DateTime _spentAt;
   bool _isLoading = false;
+  String? _loadError;
 
   List<UserProfile> _users = [];
   List<Category> _categories = [];
@@ -49,36 +52,80 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
     if (widget.expense['recurring_id'] != null) return;
     try {
       final familyData = await _backendService.getFamilyData();
-      if (mounted) {
-        setState(() {
-          _users = familyData.profiles;
-          _categories = familyData.categories;
-          _paymentMethods = familyData.paymentMethods;
+      if (!mounted) return;
 
-          _selectedUser = _users.firstWhere(
-            (u) => u.id == widget.expense['user_id'],
-            orElse: () => _users.isNotEmpty ? _users.first : _users.first,
-          );
-          _selectedCategory = _categories.firstWhere(
-            (c) => c.key == widget.expense['category_key'],
-            orElse: () =>
-                _categories.isNotEmpty ? _categories.first : _categories.first,
-          );
-          _selectedPaymentMethod = _paymentMethods.firstWhere(
-            (p) => p.id == widget.expense['payment_method_id'],
-            orElse: () => _paymentMethods.isNotEmpty
-                ? _paymentMethods.first
-                : _paymentMethods.first,
-          );
-        });
+      // The expense may point at a category that has since been hidden, a
+      // payment method that was removed, or a member who left. Substituting
+      // "the first one in the list" (what this screen used to do) silently
+      // re-categorised the expense on the next save — even when the user only
+      // meant to fix the amount. Keep the original value as an extra option
+      // instead, labelled from the expense row itself.
+      final expense = widget.expense;
+      final users = [...familyData.profiles];
+      final categories = [...familyData.categories];
+      final methods = [...familyData.paymentMethods];
+
+      UserProfile? user;
+      for (final u in users) {
+        if (u.id == expense['user_id']) user = u;
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading data: $e')),
+      if (user == null && expense['user_id'] != null) {
+        user = UserProfile(
+          id: expense['user_id'] as String,
+          name: (expense['user_name'] as String?) ?? 'common.unknown'.tr(),
         );
+        users.add(user);
       }
+
+      Category? category;
+      for (final c in categories) {
+        if (c.key == expense['category_key']) category = c;
+      }
+      if (category == null && expense['category_key'] != null) {
+        category = Category(
+          key: expense['category_key'] as String,
+          label: (expense['category_label'] as String?) ??
+              expense['category_key'] as String,
+          sortOrder: 999,
+        );
+        categories.add(category);
+      }
+
+      PaymentMethod? method;
+      for (final p in methods) {
+        if (p.id == expense['payment_method_id']) method = p;
+      }
+      if (method == null && expense['payment_method_id'] != null) {
+        method = PaymentMethod(
+          id: expense['payment_method_id'] as String,
+          name: (expense['payment_method_name'] as String?) ??
+              'common.unknown'.tr(),
+          isCreditCard: false,
+        );
+        methods.add(method);
+      }
+
+      setState(() {
+        _users = users;
+        _categories = categories;
+        _paymentMethods = methods;
+        _selectedUser = user;
+        _selectedCategory = category;
+        _selectedPaymentMethod = method;
+        _loadError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadError = 'edit_expense.load_failed'
+          .tr(namedArgs: {'error': errorText(e)}));
     }
+  }
+
+  String _categoryLabel(Category c) {
+    if (!c.isGlobal) return c.label;
+    final k = 'categories.${c.key}';
+    final t = k.tr();
+    return t == k ? c.label : t;
   }
 
   Future<void> _save() async {
@@ -87,7 +134,7 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
         _selectedCategory == null ||
         _selectedPaymentMethod == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select all required fields')),
+        SnackBar(content: Text('add_expense.select_all_fields'.tr())),
       );
       return;
     }
@@ -95,7 +142,7 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final amount = double.parse(_amountController.text.replaceAll(',', '.'));
+      final amount = parseAmount(_amountController.text)!; // validated above
       final comment = _commentController.text.trim();
 
       final updated = await _backendService.updateExpense(
@@ -112,7 +159,7 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Expense updated successfully')),
+          SnackBar(content: Text('edit_expense.updated'.tr())),
         );
         // Merge raw DB response with display-friendly labels from the selected
         // dropdown objects so the details screen refreshes without a round-trip.
@@ -128,7 +175,9 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error updating expense: $e')),
+          SnackBar(
+              content: Text('edit_expense.update_failed'
+                  .tr(namedArgs: {'error': errorText(e)}))),
         );
       }
     } finally {
@@ -136,49 +185,91 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
     }
   }
 
+  PreferredSizeWidget _buildAppBar() => AppBar(
+        title: Text('edit_expense.title'.tr(),
+            style: const TextStyle(color: Colors.black)),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black),
+      );
+
+  Widget _buildMessage({
+    required IconData icon,
+    required Color iconColor,
+    String? title,
+    required String body,
+    required String actionLabel,
+    required VoidCallback onAction,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 48, color: iconColor),
+            const SizedBox(height: 16),
+            if (title != null) ...[
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+            ],
+            Text(
+              body,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: onAction,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.black,
+                foregroundColor: Colors.white,
+              ),
+              child: Text(actionLabel),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
+
     if (widget.expense['recurring_id'] != null) {
       return Scaffold(
         backgroundColor: Colors.grey[100],
-        appBar: AppBar(
-          title:
-              const Text('Edit Expense', style: TextStyle(color: Colors.black)),
-          backgroundColor: Colors.white,
-          elevation: 0,
-          iconTheme: const IconThemeData(color: Colors.black),
+        appBar: _buildAppBar(),
+        body: _buildMessage(
+          icon: Icons.repeat,
+          iconColor: Colors.orange,
+          title: 'edit_expense.recurring_title'.tr(),
+          body: 'edit_expense.recurring_body'.tr(),
+          actionLabel: 'common.back'.tr(),
+          onAction: () => Navigator.pop(context),
         ),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.repeat, size: 48, color: Colors.orange),
-                const SizedBox(height: 16),
-                const Text(
-                  'Cannot Edit Recurring Expense',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'This expense is auto-generated from a recurring definition. '
-                  'To change its values, edit the recurring expense in Recurring Expenses settings.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.black,
-                    foregroundColor: Colors.white,
-                  ),
-                  child: const Text('Go Back'),
-                ),
-              ],
-            ),
-          ),
+      );
+    }
+
+    if (_loadError != null) {
+      return Scaffold(
+        backgroundColor: Colors.grey[100],
+        appBar: _buildAppBar(),
+        body: _buildMessage(
+          icon: Icons.error_outline,
+          iconColor: Colors.red,
+          body: _loadError!,
+          actionLabel: 'common.retry'.tr(),
+          onAction: () {
+            setState(() => _loadError = null);
+            _loadData();
+          },
         ),
       );
     }
@@ -186,26 +277,19 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
     if (_users.isEmpty) {
       return Scaffold(
         backgroundColor: Colors.grey[100],
-        appBar: AppBar(
-          title:
-              const Text('Edit Expense', style: TextStyle(color: Colors.black)),
-          backgroundColor: Colors.white,
-          elevation: 0,
-          iconTheme: const IconThemeData(color: Colors.black),
-        ),
+        appBar: _buildAppBar(),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
+    // A future-dated row (a later installment) must stay selectable: the
+    // picker rejects an initial date after its last date.
+    final now = DateTime.now();
+    final lastDate = _spentAt.isAfter(now) ? _spentAt : now;
+
     return Scaffold(
       backgroundColor: Colors.grey[100],
-      appBar: AppBar(
-        title:
-            const Text('Edit Expense', style: TextStyle(color: Colors.black)),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
-      ),
+      appBar: _buildAppBar(),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Form(
@@ -223,27 +307,20 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Amount',
-                          style: TextStyle(color: Colors.grey)),
+                      Text('add_expense.amount'.tr(),
+                          style: const TextStyle(color: Colors.grey)),
                       TextFormField(
                         controller: _amountController,
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
                         style: const TextStyle(
                             fontSize: 32, fontWeight: FontWeight.bold),
-                        decoration: const InputDecoration(
-                          prefixText: 'R\$ ',
+                        decoration: InputDecoration(
+                          prefixText: '${currencySymbol(expenseCurrency)} ',
                           border: InputBorder.none,
-                          hintText: '0.00',
+                          hintText: '0,00',
                         ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) return 'Required';
-                          if (double.tryParse(value.replaceAll(',', '.')) ==
-                              null) {
-                            return 'Invalid amount';
-                          }
-                          return null;
-                        },
+                        validator: validateAmount,
                       ),
                     ],
                   ),
@@ -251,12 +328,13 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
               ),
               const SizedBox(height: 20),
 
-              const Text('Details',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              Text('add_expense.details'.tr(),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 10),
 
               _buildDropdown<UserProfile>(
-                label: 'User',
+                label: 'add_expense.user'.tr(),
                 value: _selectedUser,
                 items: _users,
                 itemLabel: (u) => u.name,
@@ -264,15 +342,15 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
               ),
 
               _buildDropdown<Category>(
-                label: 'Category',
+                label: 'add_expense.category'.tr(),
                 value: _selectedCategory,
                 items: _categories,
-                itemLabel: (c) => c.label,
+                itemLabel: _categoryLabel,
                 onChanged: (val) => setState(() => _selectedCategory = val),
               ),
 
               _buildDropdown<PaymentMethod>(
-                label: 'Payment Method',
+                label: 'add_expense.payment_method'.tr(),
                 value: _selectedPaymentMethod,
                 items: _paymentMethods,
                 itemLabel: (p) => p.name,
@@ -283,7 +361,7 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
               // Date
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('Date'),
+                title: Text('add_expense.date'.tr()),
                 subtitle: Text(DateFormat('EEE, MMM d, yyyy').format(_spentAt)),
                 trailing: const Icon(Icons.calendar_today),
                 onTap: () async {
@@ -291,7 +369,7 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
                     context: context,
                     initialDate: _spentAt,
                     firstDate: DateTime(2020),
-                    lastDate: DateTime.now(),
+                    lastDate: lastDate,
                   );
                   if (picked != null) setState(() => _spentAt = picked);
                 },
@@ -301,9 +379,9 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
               // Comment
               TextFormField(
                 controller: _commentController,
-                decoration: const InputDecoration(
-                  labelText: 'Comment (Optional)',
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: 'add_expense.comment_optional'.tr(),
+                  border: const OutlineInputBorder(),
                 ),
                 maxLines: 2,
               ),
@@ -321,8 +399,9 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
                   ),
                   child: _isLoading
                       ? const CircularProgressIndicator(color: Colors.white)
-                      : const Text('Save Changes',
-                          style: TextStyle(fontSize: 18, color: Colors.white)),
+                      : Text('edit_expense.save'.tr(),
+                          style: const TextStyle(
+                              fontSize: 18, color: Colors.white)),
                 ),
               ),
             ],
@@ -356,7 +435,7 @@ class _EditExpenseScreenState extends State<EditExpenseScreen> {
           );
         }).toList(),
         onChanged: onChanged,
-        validator: (value) => value == null ? 'Required' : null,
+        validator: (value) => value == null ? 'common.required'.tr() : null,
       ),
     );
   }

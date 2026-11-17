@@ -1,6 +1,7 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../services/backend_service.dart';
+import '../utils/money_format.dart';
 import 'edit_expense_screen.dart';
 import '../widgets/language_toggle.dart';
 
@@ -17,6 +18,11 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
   final _backendService = BackendService();
   late Map<String, dynamic> _expense;
 
+  /// Set once the expense was edited here. Returned to the dashboard on the
+  /// way back so it reloads — before, only a delete did, and an edited amount
+  /// kept showing its old value in the list and in the totals.
+  bool _changed = false;
+
   @override
   void initState() {
     super.initState();
@@ -32,6 +38,7 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
     );
     if (updated != null && mounted) {
       setState(() {
+        _changed = true;
         _expense = {
           ..._expense,
           ...updated,
@@ -129,7 +136,13 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
     final DateTime date = DateTime.parse(_expense['spent_at']);
     final String? comment = _expense['comment'];
 
-    return Scaffold(
+    return PopScope(
+      // Back (app bar or system gesture) must carry `_changed` to the caller.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) Navigator.pop(context, _changed);
+      },
+      child: Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
         title: Text('expense_details.title'.tr(),
@@ -174,7 +187,8 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
                       style: const TextStyle(fontSize: 18, color: Colors.grey)),
                   const SizedBox(height: 10),
                   Text(
-                    'R\$ ${amount.toStringAsFixed(2)}',
+                    formatMoney(
+                        amount, expenseCurrency, context.locale.toString()),
                     style: const TextStyle(
                         fontSize: 40, fontWeight: FontWeight.bold),
                   ),
@@ -209,6 +223,7 @@ class _ExpenseDetailsScreenState extends State<ExpenseDetailsScreen> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

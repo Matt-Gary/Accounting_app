@@ -2,6 +2,10 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../utils/category_icons.dart';
+import '../utils/error_text.dart';
+import '../utils/installments.dart';
+import '../utils/money_format.dart';
 import '../widgets/language_toggle.dart';
 
 class AddExpenseScreen extends StatefulWidget {
@@ -12,6 +16,8 @@ class AddExpenseScreen extends StatefulWidget {
 }
 
 class _AddExpenseScreenState extends State<AddExpenseScreen> {
+  static const _maxInstallments = 48;
+
   final _formKey = GlobalKey<FormState>();
   final _backendService = BackendService();
 
@@ -25,19 +31,42 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
   DateTime _spentAt = DateTime.now();
   bool _isLoading = false;
 
+  /// Push the whole installment series one bill later (credit cards only).
+  bool _deferFirst = false;
+
+  /// Closing-day override stored for the month of [_spentAt], if any. It beats
+  /// the card's own closing day — the same priority the backend applies.
+  int? _monthOverride;
+  int _overrideSeq = 0;
+
   // Data
   List<UserProfile> _users = [];
   List<Category> _categories = [];
   List<PaymentMethod> _paymentMethods = [];
   String? _favoritePaymentMethodId;
 
+  String? _loadError;
+
   @override
   void initState() {
     super.initState();
+    // The installment preview depends on both fields, so it follows typing.
+    _amountController.addListener(_onInputChanged);
+    _installmentsController.addListener(_onInputChanged);
     _loadData();
   }
 
-  String? _loadError;
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _commentController.dispose();
+    _installmentsController.dispose();
+    super.dispose();
+  }
+
+  void _onInputChanged() {
+    if (mounted) setState(() {});
+  }
 
   Future<void> _loadData() async {
     try {
@@ -48,64 +77,91 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         _users = familyData.profiles;
         _categories = familyData.categories;
         _paymentMethods = familyData.paymentMethods;
-        if (_users.isNotEmpty) _selectedUser = _users.first;
-        if (_paymentMethods.isNotEmpty) {
-          final currentProfile = familyData.profiles.firstWhere(
+        if (_users.isNotEmpty) {
+          // Default to whoever is logged in. `_users.first` is merely the
+          // first name alphabetically, so in a two-person family half the
+          // expenses were attributed to the wrong person by default.
+          final currentProfile = _users.firstWhere(
             (p) => p.id == familyData.currentProfileId,
-            orElse: () => familyData.profiles.first,
+            orElse: () => _users.first,
           );
-          _favoritePaymentMethodId = currentProfile.defaultPaymentMethodId;
-          final favId = _favoritePaymentMethodId;
-          _selectedPaymentMethod = favId != null
-              ? _paymentMethods.firstWhere(
-                  (pm) => pm.id == favId,
-                  orElse: () => _paymentMethods.first,
-                )
-              : _paymentMethods.first;
+          _selectedUser = currentProfile;
+          if (_paymentMethods.isNotEmpty) {
+            _favoritePaymentMethodId = currentProfile.defaultPaymentMethodId;
+            final favId = _favoritePaymentMethodId;
+            _selectedPaymentMethod = favId != null
+                ? _paymentMethods.firstWhere(
+                    (pm) => pm.id == favId,
+                    orElse: () => _paymentMethods.first,
+                  )
+                : _paymentMethods.first;
+          }
         }
         _loadError = _users.isEmpty ? 'add_expense.no_users'.tr() : null;
       });
+      _refreshClosingOverride();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loadError =
-          'add_expense.load_failed'.tr(namedArgs: {'error': e.toString()}));
+      setState(() => _loadError = 'add_expense.load_failed'
+          .tr(namedArgs: {'error': errorText(e)}));
     }
   }
 
-  Future<bool?> _askInstallmentStartMonth(int installments) {
-    final thisMonthLabel = DateFormat('MMMM yyyy').format(_spentAt);
-    final nextMonthLabel = DateFormat('MMMM yyyy')
-        .format(DateTime(_spentAt.year, _spentAt.month + 1, 1));
-    return showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text('add_expense.first_installment_title'.tr()),
-        content: Text(
-          'add_expense.first_installment_body'
-              .tr(namedArgs: {'count': installments.toString()}),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, null),
-            child: Text('common.cancel'.tr()),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('add_expense.next_month'
-                .tr(namedArgs: {'month': nextMonthLabel})),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text('add_expense.this_month'
-                .tr(namedArgs: {'month': thisMonthLabel})),
-          ),
-        ],
-      ),
+  // ── Closing day ────────────────────────────────────────────────────────────
+
+  /// Keeps [_monthOverride] in step with the chosen date and payment method,
+  /// so the installment preview names the right bill.
+  Future<void> _refreshClosingOverride() async {
+    final seq = ++_overrideSeq;
+    final pm = _selectedPaymentMethod;
+    if (pm == null || !pm.isCreditCard) {
+      if (_monthOverride != null) setState(() => _monthOverride = null);
+      return;
+    }
+    final override = await _fetchOverride();
+    // A newer date/method change is already in flight — its answer wins.
+    if (!mounted || seq != _overrideSeq) return;
+    setState(() => _monthOverride = override);
+  }
+
+  Future<int?> _fetchOverride() async {
+    try {
+      return await _backendService.getClosingDayOverride(
+          _spentAt.month, _spentAt.year);
+    } catch (_) {
+      // Best effort: without it the card's own closing day applies.
+      return null;
+    }
+  }
+
+  int _closingDayFor(PaymentMethod pm, int? monthOverride) =>
+      monthOverride ?? pm.closingDay ?? defaultClosingDay;
+
+  // ── Installments ───────────────────────────────────────────────────────────
+
+  /// Installment count typed by the user; 0 when empty or not a number.
+  int get _installmentCount =>
+      int.tryParse(_installmentsController.text.trim()) ?? 0;
+
+  InstallmentPlan? _previewPlan() {
+    final pm = _selectedPaymentMethod;
+    final amount = parseAmount(_amountController.text);
+    final count = _installmentCount;
+    if (pm == null || amount == null || amount <= 0) return null;
+    if (count < 2 || count > _maxInstallments) return null;
+    return planInstallments(
+      total: amount,
+      count: count,
+      spentAt: _spentAt,
+      isCreditCard: pm.isCreditCard,
+      closingDay: _closingDayFor(pm, _monthOverride),
+      deferFirst: _deferFirst && pm.isCreditCard,
     );
   }
 
-  Future<void> _submit() async {
+  // ── Submit ─────────────────────────────────────────────────────────────────
+
+  Future<void> _submit({bool addAnother = false}) async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedUser == null ||
         _selectedCategory == null ||
@@ -116,79 +172,62 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
       return;
     }
 
+    // Both validated by the form above.
+    final amount = parseAmount(_amountController.text)!;
+    final installments = _installmentCount;
+    final pm = _selectedPaymentMethod!;
+    final baseComment = _commentController.text.trim();
+
+    // Each installment must be at least one cent.
+    if (installments > 1 && (amount * 100).round() < installments) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('add_expense.installments_too_many'.tr())),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
     try {
-      final amount = double.parse(_amountController.text.replaceAll(',', '.'));
-      final installmentsStr = _installmentsController.text.trim();
-      final installments =
-          (installmentsStr.isEmpty) ? 0 : int.tryParse(installmentsStr) ?? 0;
-
-      final baseComment = _commentController.text.trim();
-
       if (installments > 1) {
-        // Credit cards: ask the user which bill installment 1 belongs to.
-        // Cash/Pix have no closing-day concept, so keep #1 on spent_at.
-        bool startThisMonth = true;
-        if (_selectedPaymentMethod!.isCreditCard) {
-          final answer = await _askInstallmentStartMonth(installments);
-          if (answer == null) return;
-          startThisMonth = answer;
-        }
+        // Read the override again rather than trusting the preview's copy: a
+        // save tapped before that request returned would otherwise plan the
+        // series against the wrong closing day.
+        final closingDay = pm.isCreditCard
+            ? _closingDayFor(pm, await _fetchOverride())
+            : defaultClosingDay;
+        final plan = planInstallments(
+          total: amount,
+          count: installments,
+          spentAt: _spentAt,
+          isCreditCard: pm.isCreditCard,
+          closingDay: closingDay,
+          deferFirst: _deferFirst && pm.isCreditCard,
+        );
 
-        setState(() => _isLoading = true);
-
-        final List<Expense> expenses = [];
-        // Round to 2 decimal places (e.g. 15 / 4 = 3.75)
-        final double installmentAmount =
-            (amount / installments * 100).round() / 100;
-        // Last installment absorbs any rounding remainder to keep total exact
-        final double lastInstallmentAmount = double.parse(
-            (amount - (installmentAmount * (installments - 1)))
-                .toStringAsFixed(2));
-
-        // Installments 2..N always land on the 1st of subsequent months so
-        // the billing period is unambiguous regardless of closing-day drift.
-        final DateTime firstInstallmentDate = startThisMonth
-            ? _spentAt
-            : DateTime(_spentAt.year, _spentAt.month + 1, 1);
-        final DateTime firstBillingMonth = startThisMonth
-            ? DateTime(_spentAt.year, _spentAt.month, 1)
-            : firstInstallmentDate;
-
-        for (int i = 0; i < installments; i++) {
-          final isLast = i == installments - 1;
-          final currentAmount =
-              isLast ? lastInstallmentAmount : installmentAmount;
-          final installmentDate = i == 0
-              ? firstInstallmentDate
-              : DateTime(
-                  firstBillingMonth.year, firstBillingMonth.month + i, 1);
-
-          final commentSuffix = "(${i + 1}/$installments)";
-          final finalComment = baseComment.isEmpty
-              ? commentSuffix
-              : "$baseComment $commentSuffix";
-
-          expenses.add(Expense(
-            userId: _selectedUser!.id,
-            amount: currentAmount,
-            categoryKey: _selectedCategory!.key,
-            paymentMethodId: _selectedPaymentMethod!.id,
-            spentAt: installmentDate,
-            comment: finalComment,
-            installments: installments,
-          ));
-        }
+        final expenses = [
+          for (final entry in plan.entries)
+            Expense(
+              userId: _selectedUser!.id,
+              amount: entry.amount,
+              categoryKey: _selectedCategory!.key,
+              paymentMethodId: pm.id,
+              spentAt: entry.date,
+              comment: baseComment.isEmpty
+                  ? '(${entry.number}/$installments)'
+                  : '$baseComment (${entry.number}/$installments)',
+              installments: installments,
+            ),
+        ];
 
         await _backendService
             .addExpenses(expenses.map((e) => e.toJson()).toList());
       } else {
-        setState(() => _isLoading = true);
-
         final expense = Expense(
           userId: _selectedUser!.id,
           amount: amount,
           categoryKey: _selectedCategory!.key,
-          paymentMethodId: _selectedPaymentMethod!.id,
+          paymentMethodId: pm.id,
           spentAt: _spentAt,
           comment: baseComment.isEmpty ? null : baseComment,
           installments: installments,
@@ -197,10 +236,18 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         await _backendService.addExpense(expense.toJson());
       }
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('add_expense.added_success'.tr())),
-        );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('add_expense.added_success'.tr())),
+      );
+      if (addAnother) {
+        // Person, category, payment method and date stay: entering a stack of
+        // receipts usually repeats them.
+        _amountController.clear();
+        _commentController.clear();
+        _installmentsController.clear();
+        setState(() => _deferFirst = false);
+      } else {
         Navigator.pop(context); // Go back home
       }
     } catch (e) {
@@ -208,12 +255,21 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text('add_expense.add_failed'
-                  .tr(namedArgs: {'error': e.toString()}))),
+                  .tr(namedArgs: {'error': errorText(e)}))),
         );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
+
+  String _categoryLabel(Category c) {
+    if (!c.isGlobal) return c.label;
+    final k = 'categories.${c.key}';
+    final t = k.tr();
+    return t == k ? c.label : t;
   }
 
   @override
@@ -273,22 +329,19 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                 style: const TextStyle(color: Colors.grey)),
                             TextFormField(
                               controller: _amountController,
+                              autofocus: true,
                               keyboardType:
                                   const TextInputType.numberWithOptions(
                                       decimal: true),
                               style: const TextStyle(
                                   fontSize: 32, fontWeight: FontWeight.bold),
-                              decoration: const InputDecoration(
-                                prefixText: 'R\$ ',
+                              decoration: InputDecoration(
+                                prefixText:
+                                    '${currencySymbol(expenseCurrency)} ',
                                 border: InputBorder.none,
-                                hintText: '0.00',
+                                hintText: '0,00',
                               ),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'common.required'.tr();
-                                }
-                                return null;
-                              },
+                              validator: validateAmount,
                             ),
                           ],
                         ),
@@ -311,19 +364,20 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                       onChanged: (val) => setState(() => _selectedUser = val),
                     ),
 
-                    // Category Dropdown
-                    _buildDropdown<Category>(
-                      label: 'add_expense.category'.tr(),
-                      value: _selectedCategory,
-                      items: _categories,
-                      itemLabel: (c) {
-                        if (!c.isGlobal) return c.label;
-                        final k = 'categories.${c.key}';
-                        final t = k.tr();
-                        return t == k ? c.label : t;
-                      },
-                      onChanged: (val) =>
-                          setState(() => _selectedCategory = val),
+                    // Category Picker
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
+                        backgroundColor: Colors.blue[50],
+                        child: Icon(categoryIcon(_selectedCategory?.key),
+                            color: Colors.blue, size: 20),
+                      ),
+                      title: Text('add_expense.category'.tr()),
+                      subtitle: Text(_selectedCategory == null
+                          ? 'add_expense.pick_category'.tr()
+                          : _categoryLabel(_selectedCategory!)),
+                      trailing: const Icon(Icons.arrow_drop_down),
+                      onTap: _showCategoryPicker,
                     ),
 
                     // Payment Method Picker
@@ -358,7 +412,10 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                           firstDate: DateTime(2020),
                           lastDate: DateTime.now(),
                         );
-                        if (picked != null) setState(() => _spentAt = picked);
+                        if (picked != null) {
+                          setState(() => _spentAt = picked);
+                          _refreshClosingOverride();
+                        }
                       },
                     ),
                     const Divider(),
@@ -384,7 +441,17 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.repeat),
                       ),
+                      validator: (value) {
+                        final text = value?.trim() ?? '';
+                        if (text.isEmpty) return null;
+                        final n = int.tryParse(text);
+                        if (n == null || n < 1 || n > _maxInstallments) {
+                          return 'add_expense.installments_invalid'.tr();
+                        }
+                        return null;
+                      },
                     ),
+                    _buildInstallmentPreview(),
 
                     const SizedBox(height: 30),
 
@@ -407,10 +474,135 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                     fontSize: 18, color: Colors.white)),
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: TextButton(
+                        onPressed: _isLoading
+                            ? null
+                            : () => _submit(addAnother: true),
+                        child: Text('add_expense.save_and_new'.tr(),
+                            style: const TextStyle(color: Colors.black)),
+                      ),
+                    ),
                   ],
                 ),
               ),
             ),
+    );
+  }
+
+  /// What the installment fields will actually produce, before saving: the
+  /// per-installment amount and the bill the first one lands on. This replaces
+  /// the old "this month / next month" dialog, whose "this month" answer was
+  /// wrong for any purchase made on or after the closing day.
+  Widget _buildInstallmentPreview() {
+    final plan = _previewPlan();
+    if (plan == null) return const SizedBox.shrink();
+    final isCreditCard = _selectedPaymentMethod!.isCreditCard;
+    final locale = context.locale.toString();
+
+    final summary = (isCreditCard
+            ? 'add_expense.installments_preview'
+            : 'add_expense.installments_preview_cash')
+        .tr(namedArgs: {
+      'count': plan.entries.length.toString(),
+      'amount':
+          formatMoney(plan.entries.first.amount, expenseCurrency, locale),
+      'month': DateFormat('MMMM yyyy').format(plan.firstBillMonth),
+    });
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Text(summary,
+                style: const TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          if (isCreditCard)
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: Text('add_expense.defer_first_installment'.tr()),
+              value: _deferFirst,
+              onChanged: (v) => setState(() => _deferFirst = v),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showCategoryPicker() {
+    // Sorted by the label actually shown: the backend orders by the English
+    // label, which looks random once the names are translated.
+    final sorted = [..._categories]..sort((a, b) => _categoryLabel(a)
+        .toLowerCase()
+        .compareTo(_categoryLabel(b).toLowerCase()));
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.9,
+        builder: (_, scrollController) => GridView.builder(
+          controller: scrollController,
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            childAspectRatio: 1.1,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: sorted.length,
+          itemBuilder: (_, i) {
+            final category = sorted[i];
+            final selected = category == _selectedCategory;
+            final foreground = selected ? Colors.white : Colors.black87;
+            return InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () {
+                setState(() => _selectedCategory = category);
+                Navigator.pop(ctx);
+              },
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: selected ? Colors.black : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(categoryIcon(category.key), color: foreground),
+                    const SizedBox(height: 6),
+                    Text(
+                      _categoryLabel(category),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, color: foreground),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 
@@ -430,6 +622,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
               title: Text(pm.name),
               onTap: () {
                 setState(() => _selectedPaymentMethod = pm);
+                _refreshClosingOverride();
                 Navigator.pop(ctx);
               },
               trailing: IconButton(
@@ -445,13 +638,14 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                   try {
                     await _backendService.setFavoritePaymentMethod(newFav);
                   } catch (e) {
+                    if (!mounted) return;
                     setState(() => _favoritePaymentMethodId = previous);
                     setLocal(() {});
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error: $e')),
-                      );
-                    }
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                          content: Text('common.error_with_message'
+                              .tr(namedArgs: {'error': errorText(e)}))),
+                    );
                   }
                 },
               ),

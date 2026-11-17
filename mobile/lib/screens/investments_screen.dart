@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
 import '../utils/asset_display.dart';
+import '../utils/error_text.dart';
 import '../utils/money_format.dart';
 import '../widgets/charts/allocation_bars.dart';
 import '../widgets/charts/equity_curve.dart';
@@ -29,6 +30,16 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
 
   /// Closed positions are history, not the working view — collapsed by default.
   bool _showArchive = false;
+
+  /// Which section is showing: 0 overview, 1 positions, 2 performance. One
+  /// long page put the position list under three charts.
+  int _section = 0;
+
+  /// Bumped on every successful load and used as the charts' key. The screen
+  /// now stays mounted while it reloads (it used to be replaced by a spinner,
+  /// which rebuilt the charts as a side effect), so without this they would
+  /// keep showing the history from before a new transaction.
+  int _reloadCount = 0;
 
   // Mirrors GROUPS in the backend's service/portfolio/categories.py: the
   // exchange section is stocks + ETFs, everything else sits off-exchange.
@@ -67,11 +78,16 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
     });
     try {
       final portfolio = await _backendService.getPortfolio(refresh: refresh);
-      setState(() => _portfolio = portfolio);
+      if (!mounted) return;
+      setState(() {
+        _portfolio = portfolio;
+        _reloadCount++;
+      });
     } catch (e) {
-      setState(() => _errorMessage = e.toString());
+      if (!mounted) return;
+      setState(() => _errorMessage = errorText(e));
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -256,87 +272,161 @@ class InvestmentsScreenState extends State<InvestmentsScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
+        // Distinct tag: the dashboard tab has its own FAB in the same route.
+        heroTag: 'investments_fab',
         onPressed: _openAddTransaction,
         tooltip: 'investments.add_transaction_tooltip'.tr(),
         child: const Icon(Icons.add),
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _errorMessage.isNotEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(_errorMessage,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.red)),
-                      const SizedBox(height: 12),
-                      FilledButton(
-                          onPressed: _loadData,
-                          child: Text('common.retry'.tr())),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: () => _loadData(refresh: true),
-                  child: _portfolio == null
-                      ? Center(child: Text('investments.no_data'.tr()))
-                      : _buildBody(),
-                ),
+      body: _buildBody(),
     );
   }
 
   Widget _buildBody() {
+    if (_portfolio == null) {
+      // Nothing to show yet: the only time the spinner owns the screen. A
+      // reload keeps the portfolio visible (and the scroll position intact).
+      if (_isLoading) return const Center(child: CircularProgressIndicator());
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                  _errorMessage.isNotEmpty
+                      ? _errorMessage
+                      : 'investments.no_data'.tr(),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: _errorMessage.isNotEmpty
+                          ? Colors.red
+                          : Colors.grey)),
+              const SizedBox(height: 12),
+              FilledButton(
+                  onPressed: _loadData, child: Text('common.retry'.tr())),
+            ],
+          ),
+        ),
+      );
+    }
+
     final groupSections =
         _groupOrder.expand((g) => _buildGroupSection(g)).toList();
+    final showUsd = _displayCurrency == 'USD';
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
+    return Column(
       children: [
-        _buildCurrencyToggle(),
-        const SizedBox(height: 12),
-        _buildSummaryCard(),
-        const SizedBox(height: 12),
-        // Above everything else: a total that silently excludes a position
-        // reads as the portfolio being worth less.
-        if (_portfolio!.unavailableAssets.isNotEmpty) ...[
-          _buildIncompleteBanner(),
-          const SizedBox(height: 12),
-        ],
-        if (_portfolio!.hasConcentrationBreaches) ...[
-          _buildConcentrationBanner(),
-          const SizedBox(height: 12),
-        ],
-        EquityCurve(showUsd: _displayCurrency == 'USD'),
-        const SizedBox(height: 12),
-        PerformanceChart(showUsd: _displayCurrency == 'USD'),
-        const SizedBox(height: 12),
-        AllocationBars(
-          positions: _portfolio!.allocationPositions,
-          complete: _portfolio!.allocationComplete,
-          // Market values are present-day figures, so today's rate is the
-          // exact one for them (unlike a cost).
-          formatValue: (brl) =>
-              _money(brl, _usdRate > 0 ? brl / _usdRate : null),
+        SizedBox(
+          height: 2,
+          child: _isLoading
+              ? const LinearProgressIndicator(minHeight: 2)
+              : null,
         ),
-        if (_portfolio!.dividendsTotalNetBrl > 0) ...[
-          const SizedBox(height: 12),
-          _buildDividendsCard(),
-        ],
-        const SizedBox(height: 16),
-        if (groupSections.isEmpty)
+        // A reload that failed while the last portfolio is still on screen.
+        if (_errorMessage.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.only(top: 48),
-            child: Text(
-              'investments.empty'.tr(),
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.grey),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Text(_errorMessage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.red, fontSize: 12)),
+          ),
+        // The currency toggle applies to every section, so it stays put.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: _buildCurrencyToggle(),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<int>(
+              showSelectedIcon: false,
+              segments: [
+                ButtonSegment(
+                    value: 0,
+                    label: Text('investments.sections.overview'.tr())),
+                ButtonSegment(
+                    value: 1,
+                    label: Text('investments.sections.positions'.tr())),
+                ButtonSegment(
+                    value: 2,
+                    label: Text('investments.sections.performance'.tr())),
+              ],
+              selected: {_section},
+              onSelectionChanged: (s) => setState(() => _section = s.first),
             ),
-          )
-        else
-          ...groupSections,
-        ..._buildArchiveSection(),
+          ),
+        ),
+        Expanded(
+          // IndexedStack, not a TabBarView: every section stays alive, so the
+          // charts fetch once per load instead of on every switch.
+          child: IndexedStack(
+            index: _section,
+            children: [
+              _buildSectionList([
+                _buildSummaryCard(),
+                const SizedBox(height: 12),
+                // Above everything else: a total that silently excludes a
+                // position reads as the portfolio being worth less.
+                if (_portfolio!.unavailableAssets.isNotEmpty) ...[
+                  _buildIncompleteBanner(),
+                  const SizedBox(height: 12),
+                ],
+                if (_portfolio!.hasConcentrationBreaches) ...[
+                  _buildConcentrationBanner(),
+                  const SizedBox(height: 12),
+                ],
+                EquityCurve(
+                    key: ValueKey('equity_$_reloadCount'), showUsd: showUsd),
+                const SizedBox(height: 12),
+                AllocationBars(
+                  positions: _portfolio!.allocationPositions,
+                  complete: _portfolio!.allocationComplete,
+                  // Market values are present-day figures, so today's rate is
+                  // the exact one for them (unlike a cost).
+                  formatValue: (brl) =>
+                      _money(brl, _usdRate > 0 ? brl / _usdRate : null),
+                ),
+                if (_portfolio!.dividendsTotalNetBrl > 0) ...[
+                  const SizedBox(height: 12),
+                  _buildDividendsCard(),
+                ],
+              ]),
+              _buildSectionList([
+                if (groupSections.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 48),
+                    child: Text(
+                      'investments.empty'.tr(),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  )
+                else
+                  ...groupSections,
+                ..._buildArchiveSection(),
+              ]),
+              _buildSectionList([
+                PerformanceChart(
+                    key: ValueKey('performance_$_reloadCount'),
+                    showUsd: showUsd),
+              ]),
+            ],
+          ),
+        ),
       ],
+    );
+  }
+
+  Widget _buildSectionList(List<Widget> children) {
+    return RefreshIndicator(
+      onRefresh: () => _loadData(refresh: true),
+      child: ListView(
+        // Bottom room so the FAB never covers the last row.
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+        children: children,
+      ),
     );
   }
 
