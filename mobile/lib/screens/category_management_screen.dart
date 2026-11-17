@@ -1,6 +1,8 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../utils/error_text.dart';
 
 class CategoryManagementScreen extends StatefulWidget {
   const CategoryManagementScreen({super.key});
@@ -25,16 +27,30 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
     setState(() => _isLoading = true);
     try {
       final cats = await _backendService.getCategoriesForManagement();
+      if (!mounted) return;
       setState(() => _categories = cats);
+      // The expense form reads categories from this cache.
+      BackendService.clearFamilyDataCache();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading categories: $e')),
-        );
-      }
+      _showError(e);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  void _showError(Object error) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('common.error_with_message'
+            .tr(namedArgs: {'error': errorText(error)}))));
+  }
+
+  /// Global categories are translated by key; a family's own keep their name.
+  String _label(Category c) {
+    if (!c.isGlobal) return c.label;
+    final k = 'categories.${c.key}';
+    final t = k.tr();
+    return t == k ? c.label : t;
   }
 
   Future<void> _toggleVisibility(Category cat, bool visible) async {
@@ -42,10 +58,7 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
       await _backendService.setCategoryVisibility(cat.key, hidden: !visible);
       await _load();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
-      }
+      _showError(e);
     }
   }
 
@@ -53,16 +66,17 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete Category'),
-        content: Text('Delete "${cat.label}"?'),
+        title: Text('category_management.delete_title'.tr()),
+        content: Text('category_management.delete_body'
+            .tr(namedArgs: {'name': cat.label})),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
+              child: Text('common.cancel'.tr())),
           TextButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child:
-                  const Text('Delete', style: TextStyle(color: Colors.red))),
+              child: Text('common.delete'.tr(),
+                  style: const TextStyle(color: Colors.red))),
         ],
       ),
     );
@@ -71,10 +85,7 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
       await _backendService.deleteCustomCategory(cat.key);
       await _load();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
-      }
+      _showError(e);
     }
   }
 
@@ -83,23 +94,23 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
     final label = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Add Custom Category'),
+        title: Text('category_management.add_title'.tr()),
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Category name',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            labelText: 'category_management.name_label'.tr(),
+            border: const OutlineInputBorder(),
           ),
           textCapitalization: TextCapitalization.sentences,
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+              child: Text('common.cancel'.tr())),
           TextButton(
               onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-              child: const Text('Add')),
+              child: Text('common.add'.tr())),
         ],
       ),
     );
@@ -109,21 +120,21 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
       await _backendService.createCustomCategory(label);
       await _load();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
-      }
+      _showError(e);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final globals = _categories.where((c) => c.isGlobal).toList();
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
+    final globals = _categories.where((c) => c.isGlobal).toList()
+      ..sort((a, b) =>
+          _label(a).toLowerCase().compareTo(_label(b).toLowerCase()));
     final customs = _categories.where((c) => !c.isGlobal).toList();
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Manage Categories'),
+        title: Text('category_management.title'.tr()),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         elevation: 0,
@@ -138,12 +149,12 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               children: [
-                const _SectionHeader(
-                  title: 'Default Categories',
-                  subtitle: 'Toggle to show or hide in expense dropdowns',
+                _SectionHeader(
+                  title: 'category_management.default_title'.tr(),
+                  subtitle: 'category_management.default_subtitle'.tr(),
                 ),
                 ...globals.map((cat) => SwitchListTile(
-                      title: Text(cat.label),
+                      title: Text(_label(cat)),
                       secondary: Icon(
                         cat.isHidden
                             ? Icons.visibility_off_outlined
@@ -154,9 +165,9 @@ class _CategoryManagementScreenState extends State<CategoryManagementScreen> {
                       onChanged: (val) => _toggleVisibility(cat, val),
                     )),
                 if (customs.isNotEmpty) ...[
-                  const _SectionHeader(
-                    title: 'Custom Categories',
-                    subtitle: 'Your family\'s personal categories',
+                  _SectionHeader(
+                    title: 'category_management.custom_title'.tr(),
+                    subtitle: 'category_management.custom_subtitle'.tr(),
                   ),
                   ...customs.map((cat) => ListTile(
                         leading: const Icon(Icons.label_outline),

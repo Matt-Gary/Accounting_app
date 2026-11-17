@@ -14,10 +14,13 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
-  final GlobalKey<HomeScreenState> _homeKey = GlobalKey<HomeScreenState>();
-  final GlobalKey<InvestmentsScreenState> _investmentsKey =
-      GlobalKey<InvestmentsScreenState>();
   bool? _isSuperAdmin;
+
+  /// The Investments tab is built on its first visit, not at app start. Inside
+  /// the IndexedStack it used to load immediately: a Yahoo round-trip (and a
+  /// "visit" snapshot written for a day nobody looked at the portfolio) on
+  /// every launch, even when the user only came to log an expense.
+  bool _investmentsOpened = false;
 
   @override
   void initState() {
@@ -41,48 +44,34 @@ class _MainScreenState extends State<MainScreen> {
     context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     final isAdmin = _isSuperAdmin == true;
 
-    // Screens that live in the IndexedStack. The "Add" nav button (index 2)
-    // does not map to a screen — it triggers the add-options sheet.
+    // One screen per navigation item, in the same order. "Add" is no longer a
+    // navigation item: a bar entry that opens a sheet instead of a screen was
+    // a button dressed as a tab. Each tab now has its own floating "+".
     final screens = <Widget>[
-      HomeScreen(key: _homeKey),
-      InvestmentsScreen(key: _investmentsKey),
+      const HomeScreen(),
+      _investmentsOpened ? const InvestmentsScreen() : const SizedBox.shrink(),
       if (isAdmin) const SuperAdminScreen(),
     ];
-
-    // Map nav index -> screen index. 0,1 are direct; 2 is "Add" (handled in
-    // onTap, not via stack); 3 is admin and maps to screen slot 2.
-    final stackIndex = _currentIndex == 3 ? 2 : _currentIndex;
+    final index = _currentIndex < screens.length ? _currentIndex : 0;
 
     return Scaffold(
       body: IndexedStack(
-        index: stackIndex,
+        index: index,
         children: screens,
       ),
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
+        currentIndex: index,
         type: BottomNavigationBarType.fixed,
-        onTap: (index) {
-          if (index == 2) {
-            // Center "+" is context-aware: add an investment while the
-            // Investments tab is showing, otherwise add a spending/earning.
-            if (_currentIndex == 1) {
-              _investmentsKey.currentState?.openAddTransaction();
-            } else {
-              _homeKey.currentState?.showAddOptions();
-            }
-          } else {
-            setState(() => _currentIndex = index);
-          }
-        },
+        onTap: (tapped) => setState(() {
+          _currentIndex = tapped;
+          if (tapped == 1) _investmentsOpened = true;
+        }),
         items: [
           BottomNavigationBarItem(
               icon: const Icon(Icons.dashboard), label: 'nav.dashboard'.tr()),
           BottomNavigationBarItem(
               icon: const Icon(Icons.trending_up),
               label: 'nav.investments'.tr()),
-          BottomNavigationBarItem(
-              icon: const Icon(Icons.add_circle, size: 32, color: Colors.black),
-              label: 'nav.add'.tr()),
           if (isAdmin)
             BottomNavigationBarItem(
                 icon: const Icon(Icons.admin_panel_settings),

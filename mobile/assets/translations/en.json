@@ -19,7 +19,10 @@
     "unknown": "Unknown",
     "all": "All",
     "required": "Required",
-    "retry": "Retry"
+    "retry": "Retry",
+    "invalid_amount": "Enter an amount greater than zero",
+    "network_error": "No connection to the server. Check your internet and try again.",
+    "timeout_error": "The server took too long to respond. Try again."
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -45,7 +48,22 @@
     "sign_out_tooltip": "Sign out",
     "set_closing_day_tooltip": "Set Closing Day",
     "opening_report": "Opening report download...",
-    "report_failed": "Failed to download report: {error}"
+    "report_failed": "Failed to download report: {error}",
+    "expenses_title": "Expenses ({count})",
+    "search_hint": "Search expenses",
+    "no_results": "No expenses match the filters",
+    "filtered_total": "Filtered: {amount}",
+    "category_filter": "Category: {name}",
+    "clear_filters": "Clear filters",
+    "refresh_tooltip": "Refresh",
+    "add_tooltip": "Add",
+    "menu_report": "Download monthly report",
+    "menu_closing_day": "Card closing day: {day}",
+    "menu_closing_day_default": "Card closing day (default)",
+    "menu_recurring": "Recurring expenses",
+    "sign_out_confirm_title": "Sign out?",
+    "sign_out_confirm_body": "You will need to sign in again.",
+    "load_failed": "Could not load this month"
   },
   "update": {
     "checking": "Checking for updates...",
@@ -117,7 +135,23 @@
     "comment_optional": "Comment (Optional)",
     "installments_optional": "Installments (Optional)",
     "installments_hint": "e.g. 5",
-    "save": "Save Expense"
+    "save": "Save Expense",
+    "save_and_new": "Save and add another",
+    "pick_category": "Select a category",
+    "installments_invalid": "Enter a whole number from 1 to 48",
+    "installments_too_many": "The amount is too small for that many installments",
+    "installments_preview": "{count}× {amount} · first on the {month} bill",
+    "installments_preview_cash": "{count}× {amount} · first in {month}",
+    "defer_first_installment": "Start on the next bill"
+  },
+  "edit_expense": {
+    "title": "Edit Expense",
+    "save": "Save Changes",
+    "updated": "Expense updated",
+    "update_failed": "Could not update the expense: {error}",
+    "load_failed": "Could not load the form: {error}",
+    "recurring_title": "Cannot edit a recurring expense",
+    "recurring_body": "This expense is generated from a recurring definition. To change it, edit the definition in Recurring Expenses."
   },
   "expense_details": {
     "title": "Expense Details",
@@ -257,6 +291,11 @@
       "balance": "balance",
       "cost": "cost",
       "fx_move": "FX"
+    },
+    "sections": {
+      "overview": "Overview",
+      "positions": "Positions",
+      "performance": "Performance"
     },
     "archive": {
       "title": "Closed positions ({count})",
@@ -411,6 +450,31 @@
     "passwords_mismatch": "Passwords do not match",
     "create_account": "Create Account"
   },
+  "category_management": {
+    "title": "Manage Categories",
+    "delete_title": "Delete Category",
+    "delete_body": "Delete \"{name}\"?",
+    "add_title": "Add Custom Category",
+    "name_label": "Category name",
+    "default_title": "Default Categories",
+    "default_subtitle": "Toggle to show or hide when adding an expense",
+    "custom_title": "Custom Categories",
+    "custom_subtitle": "Your family's own categories"
+  },
+  "family_invites": {
+    "title": "Family Invites",
+    "generated_title": "Invite code generated",
+    "generated_body": "Share this code with the person you want to add. It expires in 7 days and can be used once.",
+    "copy": "Copy",
+    "copied": "Code copied to clipboard",
+    "done": "Done",
+    "revoke_title": "Revoke invite?",
+    "revoke_body": "Code {code} will stop working immediately.",
+    "revoke": "Revoke",
+    "generate": "Generate code",
+    "empty": "No active invites.\nTap \"Generate code\" to invite someone.",
+    "expires": "Expires {date}"
+  },
   "recurring": {
     "title": "Recurring Expenses",
     "form_title": "Recurring Expense Details",
@@ -419,7 +483,8 @@
     "delete_body": "This will stop future expenses from being generated. Past expenses will remain.",
     "delete_error": "Error deleting: {error}",
     "empty": "No recurring expenses set up.",
-    "item_subtitle": "{user} • R$ {amount}",
+    "item_subtitle": "{user} • {amount}",
+    "monthly_total": "Active per month: {amount}",
     "amount": "Amount",
     "description": "Description (e.g. Condominio)",
     "day_of_month": "Day of Month (1-31)",

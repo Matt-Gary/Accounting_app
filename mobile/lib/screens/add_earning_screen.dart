@@ -2,6 +2,8 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/backend_service.dart';
+import '../utils/error_text.dart';
+import '../utils/money_format.dart';
 import '../widgets/language_toggle.dart';
 
 class AddEarningScreen extends StatefulWidget {
@@ -36,7 +38,13 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
       if (mounted) {
         setState(() {
           _users = familyData.profiles.where((u) => !u.isVirtual).toList();
-          if (_users.isNotEmpty) _selectedUser = _users.first;
+          if (_users.isNotEmpty) {
+            // Default to whoever is logged in, not the first name in the list.
+            _selectedUser = _users.firstWhere(
+              (u) => u.id == familyData.currentProfileId,
+              orElse: () => _users.first,
+            );
+          }
         });
       }
     } catch (e) {
@@ -70,8 +78,8 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
         _isLoading = true;
       });
 
-      final enteredAmount =
-          double.parse(_amountController.text.replaceAll(',', '.'));
+      // Validated by the form above.
+      final enteredAmount = parseAmount(_amountController.text)!;
       final enteredDescription = _descriptionController.text;
 
       final newEarning = Earning(
@@ -91,7 +99,7 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
                 content: Text('add_earning.add_failed'
-                    .tr(namedArgs: {'error': e.toString()}))),
+                    .tr(namedArgs: {'error': errorText(e)}))),
           );
         }
       } finally {
@@ -170,7 +178,7 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
                       TextFormField(
                         decoration: InputDecoration(
                           labelText: 'add_earning.amount'.tr(),
-                          prefixText: 'R\$ ',
+                          prefixText: '${currencySymbol(expenseCurrency)} ',
                           border: const OutlineInputBorder(),
                         ),
                         controller: _amountController,
@@ -180,11 +188,11 @@ class _AddEarningScreenState extends State<AddEarningScreen> {
                           if (value == null || value.isEmpty) {
                             return 'add_earning.amount_required'.tr();
                           }
-                          if (double.tryParse(value.replaceAll(',', '.')) ==
-                              null) {
+                          final parsed = parseAmount(value);
+                          if (parsed == null) {
                             return 'add_earning.amount_invalid'.tr();
                           }
-                          if (double.parse(value.replaceAll(',', '.')) <= 0) {
+                          if (parsed <= 0) {
                             return 'add_earning.amount_positive'.tr();
                           }
                           return null;

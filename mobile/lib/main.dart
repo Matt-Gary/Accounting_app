@@ -88,6 +88,10 @@ class _AuthGateState extends State<AuthGate> {
       if (previousUserId != newUserId) {
         BackendService.clearDashboardCache();
         BackendService.clearFamilyDataCache();
+        // Signed out or switched account: the months kept on the device go
+        // too. They are named by user id, so another account could not read
+        // them anyway - this is tidiness, not the isolation itself.
+        if (previousUserId != null) BackendService.clearStoredDashboards();
       }
 
       if (state.event == AuthChangeEvent.signedOut) {

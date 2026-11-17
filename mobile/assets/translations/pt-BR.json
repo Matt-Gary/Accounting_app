@@ -19,7 +19,10 @@
     "unknown": "Desconhecido",
     "all": "Todos",
     "required": "Obrigatório",
-    "retry": "Tentar novamente"
+    "retry": "Tentar novamente",
+    "invalid_amount": "Informe um valor maior que zero",
+    "network_error": "Sem conexão com o servidor. Verifique a internet e tente novamente.",
+    "timeout_error": "O servidor demorou demais para responder. Tente novamente."
   },
   "nav": {
     "dashboard": "Painel",
@@ -45,7 +48,22 @@
     "sign_out_tooltip": "Sair",
     "set_closing_day_tooltip": "Definir dia de fechamento",
     "opening_report": "Abrindo download do relatório...",
-    "report_failed": "Falha ao baixar relatório: {error}"
+    "report_failed": "Falha ao baixar relatório: {error}",
+    "expenses_title": "Despesas ({count})",
+    "search_hint": "Buscar despesas",
+    "no_results": "Nenhuma despesa corresponde aos filtros",
+    "filtered_total": "Filtrado: {amount}",
+    "category_filter": "Categoria: {name}",
+    "clear_filters": "Limpar filtros",
+    "refresh_tooltip": "Atualizar",
+    "add_tooltip": "Adicionar",
+    "menu_report": "Baixar relatório mensal",
+    "menu_closing_day": "Dia de fechamento do cartão: {day}",
+    "menu_closing_day_default": "Dia de fechamento do cartão (padrão)",
+    "menu_recurring": "Despesas recorrentes",
+    "sign_out_confirm_title": "Sair da conta?",
+    "sign_out_confirm_body": "Você precisará entrar novamente.",
+    "load_failed": "Não foi possível carregar este mês"
   },
   "update": {
     "checking": "Verificando atualizações...",
@@ -117,7 +135,23 @@
     "comment_optional": "Comentário (Opcional)",
     "installments_optional": "Parcelas (Opcional)",
     "installments_hint": "ex. 5",
-    "save": "Salvar despesa"
+    "save": "Salvar despesa",
+    "save_and_new": "Salvar e adicionar outra",
+    "pick_category": "Selecione uma categoria",
+    "installments_invalid": "Informe um número inteiro de 1 a 48",
+    "installments_too_many": "O valor é pequeno demais para tantas parcelas",
+    "installments_preview": "{count}× {amount} · primeira na fatura de {month}",
+    "installments_preview_cash": "{count}× {amount} · primeira em {month}",
+    "defer_first_installment": "Começar na próxima fatura"
+  },
+  "edit_expense": {
+    "title": "Editar despesa",
+    "save": "Salvar alterações",
+    "updated": "Despesa atualizada",
+    "update_failed": "Não foi possível atualizar a despesa: {error}",
+    "load_failed": "Não foi possível carregar o formulário: {error}",
+    "recurring_title": "Não é possível editar uma despesa recorrente",
+    "recurring_body": "Esta despesa é gerada a partir de uma definição recorrente. Para alterá-la, edite a definição em Despesas Recorrentes."
   },
   "expense_details": {
     "title": "Detalhes da despesa",
@@ -257,6 +291,11 @@
       "balance": "saldo",
       "cost": "custo",
       "fx_move": "câmbio"
+    },
+    "sections": {
+      "overview": "Visão geral",
+      "positions": "Posições",
+      "performance": "Desempenho"
     },
     "archive": {
       "title": "Posições encerradas ({count})",
@@ -411,6 +450,31 @@
     "passwords_mismatch": "As senhas não coincidem",
     "create_account": "Criar Conta"
   },
+  "category_management": {
+    "title": "Gerenciar categorias",
+    "delete_title": "Excluir categoria",
+    "delete_body": "Excluir \"{name}\"?",
+    "add_title": "Adicionar categoria personalizada",
+    "name_label": "Nome da categoria",
+    "default_title": "Categorias padrão",
+    "default_subtitle": "Ative ou oculte ao adicionar uma despesa",
+    "custom_title": "Categorias personalizadas",
+    "custom_subtitle": "Categorias próprias da sua família"
+  },
+  "family_invites": {
+    "title": "Convites da família",
+    "generated_title": "Código de convite gerado",
+    "generated_body": "Compartilhe este código com a pessoa que deseja adicionar. Ele expira em 7 dias e só pode ser usado uma vez.",
+    "copy": "Copiar",
+    "copied": "Código copiado",
+    "done": "Concluir",
+    "revoke_title": "Revogar convite?",
+    "revoke_body": "O código {code} deixará de funcionar imediatamente.",
+    "revoke": "Revogar",
+    "generate": "Gerar código",
+    "empty": "Nenhum convite ativo.\nToque em \"Gerar código\" para convidar alguém.",
+    "expires": "Expira em {date}"
+  },
   "recurring": {
     "title": "Despesas Recorrentes",
     "form_title": "Detalhes da Despesa Recorrente",
@@ -419,7 +483,8 @@
     "delete_body": "Isso interromperá a geração de despesas futuras. As despesas passadas serão mantidas.",
     "delete_error": "Erro ao excluir: {error}",
     "empty": "Nenhuma despesa recorrente configurada.",
-    "item_subtitle": "{user} • R$ {amount}",
+    "item_subtitle": "{user} • {amount}",
+    "monthly_total": "Ativas por mês: {amount}",
     "amount": "Valor",
     "description": "Descrição (ex.: Condomínio)",
     "day_of_month": "Dia do mês (1-31)",

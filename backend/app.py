@@ -7,12 +7,16 @@ from middleware.auth import (
     require_auth,
     require_super_admin,
     get_supabase,
+    clear_auth_cache,
     SUPER_ADMIN_PROFILE_ID,
 )
 import pandas as pd
+import calendar
 import io
 import os
 import json
+import threading
+import time
 import uuid
 from dateutil.parser import parse
 
@@ -57,125 +61,185 @@ from datetime import timedelta, date
 
 # ============= RECURRING EXPENSES LOGIC =============
 
-def materialize_recurring_expenses(month, year, user_id):
-    """
-    Auto-generates expense records for active recurring definitions.
-    Only creates expenses for months on or after the template creation month.
-    """
-    client = get_pg()
+# A month that has been fully materialized is remembered per family, so the
+# dashboard does not repeat the work on every load. Before this, EVERY open of
+# the dashboard re-read every definition and re-checked each one against the
+# database (about 17 queries for 3 profiles and 10 definitions) only to find
+# there was nothing left to create.
+#
+# The memory is dropped whenever something could make the month incomplete
+# again - a definition added/edited/deleted, an expense deleted or moved (see
+# _forget_materialized) - and it expires on its own, which covers rows edited
+# directly in Supabase and a second server process with its own memory.
+_MATERIALIZED_TTL = 600.0
+_materialized_until = {}  # (family_id, year, month) -> monotonic deadline
+_materialized_generation = 0
+_materialized_lock = threading.Lock()
 
-    # Get all active recurring expenses for this user
-    recurring_defs = client.from_("recurring_expenses")\
-        .select("*")\
-        .eq("user_id", user_id)\
-        .eq("active", True)\
-        .execute().data
 
-    if not recurring_defs:
+def _forget_materialized(family_id=None):
+    """Next dashboard load re-checks recurring expenses (all months of one
+    family, or everything when family_id is None)."""
+    global _materialized_generation
+    with _materialized_lock:
+        # A pass that started before this call may have read the old
+        # definitions; the bumped generation stops it from marking its month
+        # as done afterwards.
+        _materialized_generation += 1
+        if family_id is None:
+            _materialized_until.clear()
+        else:
+            for key in [k for k in _materialized_until if k[0] == family_id]:
+                del _materialized_until[key]
+
+
+def ensure_recurring_materialized(month, year, family_id):
+    """Materializes a family's recurring expenses for one month, at most once
+    per _MATERIALIZED_TTL. Never raises: a failure here must not turn a read of
+    the month into a 500 - the month is simply re-checked on the next load."""
+    key = (family_id, year, month)
+    with _materialized_lock:
+        deadline = _materialized_until.get(key)
+        if deadline is not None and deadline > time.monotonic():
+            return
+        generation = _materialized_generation
+
+    try:
+        # Virtual profiles (e.g. "General") are included: shared recurring bills
+        # are owned by them, and skipping them would leave those rows unmaterialized.
+        profiles = get_pg().from_("profiles").select("id")\
+            .eq("family_id", family_id).execute().data or []
+        complete = materialize_recurring_expenses(
+            month, year, [p['id'] for p in profiles], family_id=family_id)
+    except Exception as e:
+        print(f"[ERROR] Recurring materialization failed for family {family_id}, {month}/{year}: {e}")
         return
 
-    # Get existing materialized expenses for this period to avoid duplicates
-    start_date, end_date = get_query_range_for_month(month, year)
-    query_end = end_date + timedelta(days=1)
-
-    existing_expenses = client.from_("expenses")\
-        .select("id, recurring_id, spent_at")\
-        .eq("user_id", user_id)\
-        .not_.is_("recurring_id", "null")\
-        .gte("spent_at", start_date.isoformat())\
-        .lt("spent_at", query_end.isoformat())\
-        .execute().data
-
-    # Map recurring_id -> list of spent_at dates already created
-    created_map = {}
-    for exp in existing_expenses:
-        rid = exp['recurring_id']
-        if rid not in created_map:
-            created_map[rid] = []
-        created_map[rid].append(parse(exp['spent_at']).date())
-
-    # Process each recurring definition.
-    # Every step inside is a network round-trip, so any of them can fail. Before this
-    # guard a single failure aborted the whole loop - and, through the caller, every
-    # REMAINING family member too - so the month came back holding only part of its
-    # recurring expenses, which looks exactly like "never configured". Fail one
-    # definition, log it, keep going.
-    for rdef in recurring_defs:
-        try:
-            _materialize_one_recurring(client, rdef, month, year, user_id, created_map)
-        except Exception as e:
-            print(f"[ERROR] Skipping recurring {rdef.get('id')} "
-                  f"('{rdef.get('description')}') for {month}/{year}: {e}")
+    # Only a pass in which every row landed is remembered; a partial one is
+    # retried on the next load instead of hiding the missing bill for 10 minutes.
+    if complete:
+        with _materialized_lock:
+            if generation == _materialized_generation:
+                _materialized_until[key] = time.monotonic() + _MATERIALIZED_TTL
 
 
-def _materialize_one_recurring(client, rdef, month, year, user_id, created_map):
-    """
-    Materializes ONE recurring definition for one month. Raises on DB errors so the
-    caller can log that single definition and continue with the next one.
-    """
-    rid = rdef['id']
-    day = rdef['day_of_month'] or 1
+def _forget_materialized_if_recurring(rows, family_id):
+    """After deleting expenses: a deleted row that came from a recurring
+    definition leaves its month incomplete, so the next load has to look again
+    (it re-creates the bill, exactly as it did before the memory existed).
+    Ordinary expenses - nearly every delete - leave the memory alone."""
+    if any(row.get('recurring_id') for row in (rows or [])):
+        _forget_materialized(family_id)
 
-    print(f"[DEBUG] Processing recurring '{rdef.get('description')}' (id={rid}, day={day}) for {month}/{year}")
 
-    # Calculate target date, handling end-of-month edge cases
-    try:
-        target_date = date(year, month, day)
-    except ValueError:
-        # Handle cases like Feb 31 -> Feb 28/29
-        import calendar
-        last_day = calendar.monthrange(year, month)[1]
-        target_date = date(year, month, min(day, last_day))
-
-    print(f"[DEBUG] Target date: {target_date}")
+def _recurring_target_date(rdef, month, year):
+    """The date a definition bills on in the given month, or None when the
+    month lies before the definition existed."""
+    day = rdef.get('day_of_month') or 1
+    # Short months: day 31 in February -> Feb 28/29.
+    last_day = calendar.monthrange(year, month)[1]
+    target_date = date(year, month, max(1, min(day, last_day)))
 
     # Don't backdate: only allow expenses for the creation month or later.
     # e.g. created on March 20 with day_of_month=5 -> March 5 IS allowed (same month).
     created_at_date = parse(rdef['created_at']).date()
-    print(f"[DEBUG] Created at: {created_at_date}")
+    if target_date < date(created_at_date.year, created_at_date.month, 1):
+        return None
+    return target_date
 
-    created_month_start = date(created_at_date.year, created_at_date.month, 1)
-    if target_date < created_month_start:
-        print(f"[DEBUG] SKIPPING: Target {target_date} is before creation month {created_month_start}")
-        return
 
-    # Check if already materialized for this month
-    if rid in created_map:
-        for dt in created_map[rid]:
-            # We check strict month match for materialization to avoid duplicates in same month
-            if dt.month == month and dt.year == year:
-                print(f"[DEBUG] SKIPPING: Already created for this month on {dt}")
-                return
+def materialize_recurring_expenses(month, year, profile_ids, family_id=None):
+    """
+    Auto-generates expense records for the active recurring definitions owned by
+    the given profiles. Only creates expenses for months on or after the
+    definition's creation month.
 
-    # Double-check with a fresh DB query to prevent duplicates from concurrent requests
+    Works in batches - one query for the definitions, one for what already
+    exists, one insert - however many profiles and definitions there are. It
+    used to be two queries per profile plus one per definition.
+
+    Returns True when the month is complete afterwards, False when a row could
+    not be created. Raises if the definitions or existing rows cannot be read.
+    """
+    profile_ids = [pid for pid in profile_ids if pid]
+    if not profile_ids:
+        return True
+
+    client = get_pg()
+
+    recurring_defs = client.from_("recurring_expenses")\
+        .select("*")\
+        .in_("user_id", profile_ids)\
+        .eq("active", True)\
+        .execute().data or []
+
+    due = []
+    for rdef in recurring_defs:
+        target_date = _recurring_target_date(rdef, month, year)
+        if target_date is not None:
+            due.append((rdef, target_date))
+    if not due:
+        return True
+
+    # Already materialized = an expense linked to the definition anywhere in this
+    # calendar month (not only on today's target day: the user may have changed
+    # day_of_month since, and the bill must not appear a second time).
     month_start = date(year, month, 1)
-    if month == 12:
-        month_end = date(year + 1, 1, 1)
-    else:
-        month_end = date(year, month + 1, 1)
+    month_end = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
     existing = client.from_("expenses")\
-        .select("id", count="exact")\
-        .eq("recurring_id", rid)\
+        .select("recurring_id")\
+        .in_("recurring_id", [rdef['id'] for rdef, _ in due])\
         .gte("spent_at", month_start.isoformat())\
         .lt("spent_at", month_end.isoformat())\
-        .execute()
-    if existing.data and len(existing.data) > 0:
-        print(f"[DEBUG] SKIPPING: Fresh DB check found existing expense for {rid} in {month}/{year}")
-        return
+        .execute().data or []
+    already = {exp['recurring_id'] for exp in existing}
 
-    print(f"[DEBUG] MATERIALIZING: Creating expense for {target_date}")
-    new_exp = {
-        "user_id": user_id,
+    # Every row carries the same keys: a bulk insert needs a uniform shape.
+    rows = [{
+        "user_id": rdef['user_id'],
         "amount": rdef['amount'],
         "category_key": rdef['category_key'],
         "payment_method_id": rdef['payment_method_id'],
         "spent_at": target_date.isoformat(),
-        "recurring_id": rid,
-        "comment": f"Recurring: {rdef['description'] or ''}".strip()
-    }
-    if rdef.get('family_id'):
-        new_exp['family_id'] = rdef['family_id']
-    client.from_("expenses").insert(new_exp).execute()
+        "recurring_id": rdef['id'],
+        "comment": f"Recurring: {rdef['description'] or ''}".strip(),
+        # A definition saved before families existed has no family_id; without
+        # one its expense would be invisible to the family-scoped dashboard.
+        "family_id": rdef.get('family_id') or family_id,
+    } for rdef, target_date in due if rdef['id'] not in already]
+    if not rows:
+        return True
+
+    print(f"[DEBUG] Materializing {len(rows)} recurring expense(s) for {month}/{year}")
+
+    # The check above and this insert are not atomic: two concurrent loads of the
+    # same month both see "nothing yet" and both insert. The unique index on
+    # (recurring_id, spent_at) from migrations/recurring_unique_materialization.sql
+    # is what makes that harmless - ON CONFLICT DO NOTHING skips the rows the
+    # other request already wrote instead of showing the bill twice.
+    try:
+        client.from_("expenses").upsert(
+            rows, on_conflict="recurring_id,spent_at", ignore_duplicates=True
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"[WARN] Bulk materialization failed for {month}/{year}, retrying row by row: {e}")
+
+    # One bad definition (e.g. its category or payment method was deleted) fails
+    # the whole batch. Row by row, only that one is lost: before this guard a
+    # single failure left the month holding part of its recurring expenses,
+    # which looks exactly like "never configured".
+    complete = True
+    for row in rows:
+        try:
+            client.from_("expenses").insert(row).execute()
+        except Exception as e:
+            if _pg_error_code(e) == '23505':
+                continue  # written by a concurrent request - the outcome we wanted
+            complete = False
+            print(f"[ERROR] Skipping recurring {row['recurring_id']} "
+                  f"('{row['comment']}') for {month}/{year}: {e}")
+    return complete
 
 # =====================================================
 
@@ -450,6 +514,9 @@ def update_expense(expense_id):
             .execute()
         if not res.data:
             return jsonify({"error": "Expense not found or unauthorized"}), 404
+        # A recurring bill moved to another date may have left its month.
+        if 'spent_at' in update_data and res.data[0].get('recurring_id'):
+            _forget_materialized(g.family_id)
         return jsonify(res.data[0]), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -765,44 +832,26 @@ def fetch_expenses_for_period(month, year, user_id=None, closing_day_override=No
         .lt("spent_at", query_end.isoformat())
         
     if family_id:
-        # Family-scoped: materialize for all real family members then filter by family_id.
-        # Virtual profiles (e.g. "General") are included: shared recurring bills are
-        # owned by them, and skipping them would leave those rows unmaterialized.
-        try:
-            family_users = client.from_("profiles").select("id")\
-                .eq("family_id", family_id).execute().data
-        except Exception as e:
-            print(f"[ERROR] Could not list family profiles for materialization: {e}")
-            family_users = []
-        for user in family_users:
-            # Per-profile guard: one member's failure must not cost the OTHER members
-            # their recurring expenses for this month.
-            try:
-                materialize_recurring_expenses(month, year, user['id'])
-            except Exception as e:
-                print(f"[ERROR] Materialization failed for profile {user['id']}: {e}")
+        # Family-scoped: materialize for every profile of the family (skipped when
+        # this month was already done recently), then filter by family_id.
+        ensure_recurring_materialized(month, year, family_id)
         query = query.eq("family_id", family_id)
     elif user_id:
         # Fallback: filter by specific user (for backwards compat / single-user case).
         # Guarded: a materialization failure must not turn a read of the month into a 500.
         try:
-            materialize_recurring_expenses(month, year, user_id)
+            materialize_recurring_expenses(month, year, [user_id])
         except Exception as e:
             print(f"[ERROR] Materialization failed for user {user_id}: {e}")
         query = query.eq("user_id", user_id)
     else:
         # No filter - materialize for all users (should not happen in normal flow)
         try:
-            all_users = client.from_("profiles").select("id").execute().data
+            all_users = client.from_("profiles").select("id").execute().data or []
+            materialize_recurring_expenses(month, year, [u['id'] for u in all_users])
         except Exception as e:
-            print(f"[ERROR] Could not list profiles for materialization: {e}")
-            all_users = []
-        for user in all_users:
-            try:
-                materialize_recurring_expenses(month, year, user['id'])
-            except Exception as e:
-                print(f"[ERROR] Materialization failed for profile {user['id']}: {e}")
-        
+            print(f"[ERROR] Materialization failed for all profiles: {e}")
+
     res = query.execute()
     raw_expenses = res.data
     
@@ -968,6 +1017,7 @@ def delete_expense(expense_id):
                 else:
                     del_q = del_q.eq("user_id", g.profile_id)
                 res = del_q.execute()
+                _forget_materialized_if_recurring(res.data, g.family_id)
                 return jsonify({
                     "message": "Installments deleted successfully",
                     "deleted_count": len(res.data or [])
@@ -984,6 +1034,7 @@ def delete_expense(expense_id):
         if not res.data:
             return jsonify({"error": "Expense not found or not authorised"}), 404
 
+        _forget_materialized_if_recurring(res.data, g.family_id)
         return jsonify({"message": "Expense deleted successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1024,6 +1075,8 @@ def create_recurring():
     try:
         client = get_pg()
         res = client.from_("recurring_expenses").insert(data).execute()
+        # The new bill has to show up on the very next dashboard load.
+        _forget_materialized(g.family_id)
         return jsonify(res.data[0]), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1111,6 +1164,10 @@ def update_recurring(rid):
     except Exception as e:
         print(f"[ERROR] Update recurring failed: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        # Also on failure: the steps above are separate writes, so an error
+        # half-way may already have changed the definition (e.g. re-activated it).
+        _forget_materialized(g.family_id)
 
 @app.route('/recurring-expenses/<rid>', methods=['DELETE'])
 @require_auth
@@ -1168,6 +1225,9 @@ def delete_recurring(rid):
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        # Also on failure: a delete that stopped half-way has already removed rows.
+        _forget_materialized(g.family_id)
 
 @app.route('/report/monthly', methods=['GET'])
 @require_auth
@@ -1656,6 +1716,8 @@ def admin_update_user(profile_id):
         client.from_("family_members").update({"display_name": new_name})\
             .eq("user_id", auth_id).execute()
 
+    # The remembered identity carries the e-mail; do not serve the old one.
+    clear_auth_cache()
     return jsonify({"profile_id": profile_id, **updates}), 200
 
 
@@ -1678,6 +1740,8 @@ def admin_delete_user(profile_id):
 
     row = (res.data or [{}])[0]
     _purge_auth_user(row.get("auth_id"))
+    # A deleted user must lose access now, not when their cached identity expires.
+    clear_auth_cache()
     return jsonify({"deleted": "user", "profile_id": profile_id}), 200
 
 
@@ -1699,6 +1763,9 @@ def admin_delete_family(family_id):
     auth_ids = [r.get("auth_id") for r in (res.data or []) if r.get("auth_id")]
     for aid in auth_ids:
         _purge_auth_user(aid)
+    # Same as deleting one user: access ends now, and the family's months are forgotten.
+    clear_auth_cache()
+    _forget_materialized(family_id)
     return jsonify({
         "deleted": "family",
         "family_id": family_id,

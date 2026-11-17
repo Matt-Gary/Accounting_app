@@ -1,7 +1,8 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:intl/intl.dart';
 import '../services/backend_service.dart';
+import '../utils/error_text.dart';
 
 class FamilyInvitesScreen extends StatefulWidget {
   const FamilyInvitesScreen({super.key});
@@ -38,7 +39,7 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = e.toString();
+        _errorMessage = errorText(e);
         _loading = false;
       });
     }
@@ -54,7 +55,7 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
+        SnackBar(content: Text(errorText(e)), backgroundColor: Colors.red),
       );
     } finally {
       if (mounted) setState(() => _creating = false);
@@ -65,12 +66,11 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Invite code generated'),
+        title: Text('family_invites.generated_title'.tr()),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Share this code with the person you want to add. '
-                'It expires in 7 days and can be used once.'),
+            Text('family_invites.generated_body'.tr()),
             const SizedBox(height: 16),
             SelectableText(
               code,
@@ -86,19 +86,19 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
         actions: [
           TextButton.icon(
             icon: const Icon(Icons.copy),
-            label: const Text('Copy'),
+            label: Text('family_invites.copy'.tr()),
             onPressed: () async {
               await Clipboard.setData(ClipboardData(text: code));
               if (ctx.mounted) {
                 ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(content: Text('Code copied to clipboard')),
+                  SnackBar(content: Text('family_invites.copied'.tr())),
                 );
               }
             },
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Done'),
+            child: Text('family_invites.done'.tr()),
           ),
         ],
       ),
@@ -109,17 +109,18 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Revoke invite?'),
-        content: Text('Code $code will stop working immediately.'),
+        title: Text('family_invites.revoke_title'.tr()),
+        content:
+            Text('family_invites.revoke_body'.tr(namedArgs: {'code': code})),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
+            child: Text('common.cancel'.tr()),
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Revoke'),
+            child: Text('family_invites.revoke'.tr()),
           ),
         ],
       ),
@@ -132,7 +133,7 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
+        SnackBar(content: Text(errorText(e)), backgroundColor: Colors.red),
       );
     }
   }
@@ -145,10 +146,11 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.locale; // subscribe to locale changes so .tr() strings re-evaluate
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text('Family Invites'),
+        title: Text('family_invites.title'.tr()),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         elevation: 0,
@@ -162,7 +164,7 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
                 child: CircularProgressIndicator(
                     strokeWidth: 2, color: Colors.white))
             : const Icon(Icons.add),
-        label: const Text('Generate code'),
+        label: Text('family_invites.generate'.tr()),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
       ),
@@ -180,7 +182,8 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
                             style: const TextStyle(color: Colors.red)),
                         const SizedBox(height: 16),
                         ElevatedButton(
-                            onPressed: _load, child: const Text('Retry')),
+                            onPressed: _load,
+                            child: Text('common.retry'.tr())),
                       ],
                     ),
                   ),
@@ -190,15 +193,15 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
                   child: _invites.isEmpty
                       ? ListView(
                           padding: const EdgeInsets.all(24),
-                          children: const [
-                            SizedBox(height: 80),
-                            Icon(Icons.mail_outline,
+                          children: [
+                            const SizedBox(height: 80),
+                            const Icon(Icons.mail_outline,
                                 size: 64, color: Colors.grey),
-                            SizedBox(height: 16),
+                            const SizedBox(height: 16),
                             Text(
-                              'No active invites.\nTap "Generate code" to invite someone.',
+                              'family_invites.empty'.tr(),
                               textAlign: TextAlign.center,
-                              style: TextStyle(color: Colors.grey),
+                              style: const TextStyle(color: Colors.grey),
                             ),
                           ],
                         )
@@ -226,27 +229,32 @@ class _FamilyInvitesScreenState extends State<FamilyInvitesScreen> {
                                     fontFamily: 'monospace',
                                   ),
                                 ),
-                                subtitle: Text(
-                                    'Expires ${_formatExpiry(inv['expires_at'] as String)}'),
+                                subtitle: Text('family_invites.expires'.tr(
+                                    namedArgs: {
+                                      'date': _formatExpiry(
+                                          inv['expires_at'] as String)
+                                    })),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     IconButton(
                                       icon: const Icon(Icons.copy),
-                                      tooltip: 'Copy',
+                                      tooltip: 'family_invites.copy'.tr(),
                                       onPressed: () async {
                                         final messenger =
                                             ScaffoldMessenger.of(context);
                                         await Clipboard.setData(
                                             ClipboardData(text: code));
-                                        messenger.showSnackBar(const SnackBar(
-                                            content: Text('Copied')));
+                                        messenger.showSnackBar(SnackBar(
+                                            content: Text(
+                                                'family_invites.copied'
+                                                    .tr())));
                                       },
                                     ),
                                     IconButton(
                                       icon: const Icon(Icons.delete_outline,
                                           color: Colors.red),
-                                      tooltip: 'Revoke',
+                                      tooltip: 'family_invites.revoke'.tr(),
                                       onPressed: () => _revoke(code),
                                     ),
                                   ],
